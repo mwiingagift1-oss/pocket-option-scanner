@@ -30,7 +30,7 @@ PAIRS = [
 st.title("📈 Multi-Timeframe Forex Analyzer")
 st.caption(
     "15-minute main trend • 5-minute confirmation • "
-    "1-minute entry checks • Bollinger breakout confirmation"
+    "1-minute entry checks • optional Bollinger context"
 )
 
 st_autorefresh(interval=60000, key="auto_refresh")
@@ -61,7 +61,7 @@ def fetch_candles(symbol, interval, api_key, outputsize):
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise ValueError(
-                "API key rejected. Check the key entered in the sidebar."
+                "API key rejected. Check the TWELVE_DATA_API_KEY Secret or sidebar key."
             ) from exc
         if exc.code == 429:
             raise ValueError(
@@ -335,214 +335,104 @@ def wait_result(base, direction, status, reason):
 
 
 def analyze_setup(df1, df5, df15):
-    trend15 = get_trend(df15)
-    trend5 = get_trend(df5)
+    """1m-first binary-style setup. Higher timeframes are context, not gates."""
+    trend5, trend15 = get_trend(df5), get_trend(df15)
+    base = {"trend15": trend15, "trend5": trend5}
+    if len(df1) < 30:
+        return wait_result(base, "NONE", "NOT ENOUGH 1M DATA", "Need at least 30 one-minute candles.")
 
-    base = {
-        "trend15": trend15,
-        "trend5": trend5,
-    }
+    # Use the latest completed candle; exclude the still-forming candle.
+    completed = candle_features(df1.iloc[:-1].tail(80).copy())
+    if len(completed) < 25:
+        return wait_result(base, "NONE", "NOT ENOUGH COMPLETED DATA", "Waiting for completed 1m candles.")
 
-    latest_time = df1.iloc[-1]["time"]
-    now = datetime.now(timezone.utc)
-    candle_age = max(0.0, (now - latest_time).total_seconds())
-    base["data_age"] = candle_age
+    last, prev = completed.iloc[-1], completed.iloc[-2]
+    recent3 = completed.tail(3)
+    age = max(0.0, (datetime.now(timezone.utc) - last["time"]).total_seconds())
+    base["data_age"] = age
+    if age > 240:
+        return wait_result(base, "NONE", "STALE 1M DATA", f"Latest completed 1m candle is about {int(age)} seconds old.")
 
-    # The timestamp is the candle's opening time, not its last update time.
-    # This deliberately errs on the cautious side.
-    if candle_age > 150:
-        return wait_result(
-            base, "NONE", "STALE 1-MINUTE DATA",
-            "The latest 1-minute candle is too old for a cautious setup check.",
-        )
+    o, h, low, close = map(float, [last["open"], last["high"], last["low"], last["close"]])
+    candle_range = max(h - low, 1e-12)
+    close_pos = (close - low) / candle_range
+    body_ratio = float(last["body_ratio"])
+    upper_wick = float(last["upper_wick_ratio"])
+    lower_wick = float(last["lower_wick_ratio"])
+    atr = float(last["atr"]) if pd.notna(last["atr"]) else 0.0
+    if atr <= 0:
+        return wait_result(base, "NONE", "INDICATORS LOADING", "Waiting for enough 1m data.")
 
-    direction15 = trend15["direction"]
-    direction5 = trend5["direction"]
+    bull_reject = lower_wick >= 0.45 and close_pos >= 0.60
+    bear_reject = upper_wick >= 0.45 and close_pos <= 0.40
+    bull_candle = close > o and close_pos >= 0.60
+    bear_candle = close < o and close_pos <= 0.40
+    momentum = float(recent3.iloc[-1]["close"] - recent3.iloc[0]["open"])
+    bb_valid = pd.notna(last["bb_upper"]) and pd.notna(last["bb_lower"])
+    bb_bull = bool(bb_valid and close > float(last["bb_middle"]))
+    bb_bear = bool(bb_valid and close < float(last["bb_middle"]))
 
-    if (
-        direction15 not in ("BULLISH", "BEARISH")
-        or direction15 != direction5
-    ):
-        return wait_result(
-            base, "NONE", "TIMEFRAMES NOT ALIGNED",
-            "The completed 15-minute and 5-minute trends must agree.",
-        )
+    support, resistance = get_levels(df1)
+    near_resistance = bool(resistance and (resistance[0]["price"] - close) / atr < 0.35)
+    near_support = bool(support and (close - support[0]["price"]) / atr < 0.35)
 
-    if (
-        trend15["strength"] != "Strong"
-        or trend5["strength"] == "Weak"
-    ):
-        return wait_result(
-            base, direction15, "TREND STRENGTH TOO LOW",
-            "Require a Strong 15-minute trend and at least a Moderate 5-minute trend.",
-        )
+    if candle_range > atr * 2.5:
+        return wait_result(base, "NONE", "1M CANDLE EXTENDED", "Avoid chasing an unusually large 1m candle.")
+    if body_ratio < 0.18 and not bull_reject and not bear_reject:
+        return wait_result(base, "NONE", "INDECISIVE 1M CANDLE", "Latest completed 1m candle has no clear direction.")
 
-    # Include enough candles to calculate indicators consistently.
-    recent = candle_features(df1.tail(30))
-    current = recent.iloc[-1]
-    atr_value = current["atr"]
-
-    if pd.isna(atr_value) or float(atr_value) <= 0:
-        return wait_result(
-            base, direction15, "INSUFFICIENT VOLATILITY DATA",
-            "Not enough recent candle-range data to evaluate the entry.",
-        )
-
-    atr = float(atr_value)
-    candle_range = float(current["range"])
-    body = float(current["body"])
-    body_ratio = float(current["body_ratio"])
-
-    if body_ratio < 0.50:
-        return wait_result(
-            base, direction15, "WEAK OR INDECISIVE CANDLE",
-            "The candle body is too small compared with its full range.",
-        )
-
-    if candle_range > atr * 2.2:
-        return wait_result(
-            base, direction15, "MOVE ALREADY EXTENDED",
-            "The current candle is unusually large. Avoid chasing a sudden move.",
-        )
-
-    bullish = current["close"] > current["open"]
-    bearish = current["close"] < current["open"]
-
-    last_three = recent.tail(3)
-    bullish_count = int((last_three["close"] > last_three["open"]).sum())
-    bearish_count = int((last_three["close"] < last_three["open"]).sum())
-
-    if direction15 == "BULLISH":
-        if not bullish or bullish_count < 2:
-            return wait_result(
-                base, direction15, "WAITING FOR CALL CONFIRMATION",
-                "The current candle and recent 1-minute momentum do not confirm bullish continuation.",
-            )
-    else:
-        if not bearish or bearish_count < 2:
-            return wait_result(
-                base, direction15, "WAITING FOR PUT CONFIRMATION",
-                "The current candle and recent 1-minute momentum do not confirm bearish continuation.",
-            )
-
-    # Require the candle to finish in the directional part of its range.
-    close_position = (
-        float(current["close"]) - float(current["low"])
-    ) / max(candle_range, 1e-12)
-
-    if direction15 == "BULLISH" and close_position < 0.65:
-        return wait_result(
-            base, direction15, "BULLISH CLOSE NOT STRONG ENOUGH",
-            "A bullish setup should close in the upper part of its candle range.",
-        )
-
-    if direction15 == "BEARISH" and close_position > 0.35:
-        return wait_result(
-            base, direction15, "BEARISH CLOSE NOT STRONG ENOUGH",
-            "A bearish setup should close in the lower part of its candle range.",
-        )
-
-    # Bollinger confirmation: look for a recent close beyond the outer band,
-    # or a middle-band cross in the trend direction while band width expands.
-    # Requiring confirmation within the last 3 candles avoids relying on old breaks.
-    bb_rows = recent.tail(4).copy()
-    bb_rows = bb_rows.dropna(subset=["bb_upper", "bb_middle", "bb_lower", "bb_width"])
-    if len(bb_rows) < 3:
-        return wait_result(
-            base, direction15, "WAITING FOR BOLLINGER DATA",
-            "Need at least 20 candles to calculate Bollinger Bands reliably.",
-        )
-
-    bb_last = bb_rows.iloc[-1]
-    bb_prev = bb_rows.iloc[-2]
-    bb_breakout = False
-    bb_reason = ""
-
-    if direction15 == "BULLISH":
-        upper_break = bool((bb_rows["close"] > bb_rows["bb_upper"]).any())
-        middle_cross = bool(
-            bb_prev["close"] <= bb_prev["bb_middle"]
-            and bb_last["close"] > bb_last["bb_middle"]
-            and bb_last["close"] > bb_last["open"]
-        )
-        expanding = bool(bb_last["bb_width"] > bb_prev["bb_width"])
-        bb_breakout = upper_break or (middle_cross and expanding)
-        bb_reason = (
-            "upper-band breakout" if upper_break else
-            "bullish middle-band cross with expanding bands" if bb_breakout else
-            "no recent bullish Bollinger confirmation"
-        )
-    else:
-        lower_break = bool((bb_rows["close"] < bb_rows["bb_lower"]).any())
-        middle_cross = bool(
-            bb_prev["close"] >= bb_prev["bb_middle"]
-            and bb_last["close"] < bb_last["bb_middle"]
-            and bb_last["close"] < bb_last["open"]
-        )
-        expanding = bool(bb_last["bb_width"] > bb_prev["bb_width"])
-        bb_breakout = lower_break or (middle_cross and expanding)
-        bb_reason = (
-            "lower-band breakout" if lower_break else
-            "bearish middle-band cross with expanding bands" if bb_breakout else
-            "no recent bearish Bollinger confirmation"
-        )
+    call_score, put_score = 0, 0
+    call_reasons, put_reasons = [], []
+    if bull_candle:
+        call_score += 2
+        call_reasons.append("bullish 1m candle closed in upper range")
+    if bear_candle:
+        put_score += 2
+        put_reasons.append("bearish 1m candle closed in lower range")
+    if bull_reject:
+        call_score += 2
+        call_reasons.append("lower-wick rejection")
+    if bear_reject:
+        put_score += 2
+        put_reasons.append("upper-wick rejection")
+    if momentum > 0:
+        call_score += 1
+        call_reasons.append("short-term momentum upward")
+    elif momentum < 0:
+        put_score += 1
+        put_reasons.append("short-term momentum downward")
+    if bb_bull:
+        call_score += 1
+        call_reasons.append("close above Bollinger middle band")
+    if bb_bear:
+        put_score += 1
+        put_reasons.append("close below Bollinger middle band")
+    if near_resistance:
+        call_score -= 2
+        call_reasons.append("nearby resistance caution")
+    if near_support:
+        put_score -= 2
+        put_reasons.append("nearby support caution")
 
     base["bollinger"] = {
-        "confirmation": bb_breakout,
-        "reason": bb_reason,
-        "upper": float(bb_last["bb_upper"]),
-        "middle": float(bb_last["bb_middle"]),
-        "lower": float(bb_last["bb_lower"]),
-        "width_expanding": bool(bb_last["bb_width"] > bb_prev["bb_width"]),
+        "confirmation": bool(bb_bull or bb_bear),
+        "reason": "Supporting context only; no breakout required",
+        "upper": float(last["bb_upper"]) if bb_valid else None,
+        "middle": float(last["bb_middle"]) if bb_valid else None,
+        "lower": float(last["bb_lower"]) if bb_valid else None,
+        "width_expanding": bool(pd.notna(last["bb_width"]) and pd.notna(prev["bb_width"]) and last["bb_width"] > prev["bb_width"]),
     }
+    base["entry_reference"] = close
+    base["call_score"], base["put_score"] = max(0, call_score), max(0, put_score)
 
-    if not bb_breakout:
-        return wait_result(
-            base, direction15, "WAITING FOR BOLLINGER CONFIRMATION",
-            "Trend and candle checks passed, but " + bb_reason + ". Wait for a band breakout or a middle-band cross with band expansion.",
-        )
-
-    # Avoid entries directly into a nearby opposing support/resistance zone.
-    support, resistance = get_levels(df1)
-    price = float(current["close"])
-    distance_limit = atr * 0.35
-
-    if direction15 == "BULLISH" and resistance:
-        nearest_resistance = min(
-            resistance, key=lambda level: abs(price - level["price"])
-        )
-        if abs(price - nearest_resistance["price"]) <= distance_limit:
-            return wait_result(
-                base, direction15, "RESISTANCE TOO CLOSE",
-                "A confirmed resistance zone is nearby. Avoid buying directly into it.",
-            )
-
-    if direction15 == "BEARISH" and support:
-        nearest_support = min(
-            support, key=lambda level: abs(price - level["price"])
-        )
-        if abs(price - nearest_support["price"]) <= distance_limit:
-            return wait_result(
-                base, direction15, "SUPPORT TOO CLOSE",
-                "A confirmed support zone is nearby. Avoid selling directly into it.",
-            )
-
-    signal = "PREPARE CALL" if direction15 == "BULLISH" else "PREPARE PUT"
-
-    return {
-        **base,
-        "signal": signal,
-        "direction": direction15,
-        "status": "PROVISIONAL SETUP — RECHECK BEFORE ENTRY",
-        "reason": (
-            "The completed 15m and 5m trends agree, recent 1m momentum "
-            "matches, Bollinger Bands confirm the move (" + bb_reason + "), "
-            "the candle has a directional close, and nearby opposing levels "
-            "were checked. This setup can still fail."
-        ),
-    }
-
-
+    if call_score >= 4 and call_score >= put_score + 2:
+        return {**base, "signal": "PREPARE CALL", "direction": "BULLISH", "status": "1M CALL SETUP",
+                "reason": "; ".join(call_reasons) + f". Reference close {close:.6f}; forecast for next 1m candle."}
+    if put_score >= 4 and put_score >= call_score + 2:
+        return {**base, "signal": "PREPARE PUT", "direction": "BEARISH", "status": "1M PUT SETUP",
+                "reason": "; ".join(put_reasons) + f". Reference close {close:.6f}; forecast for next 1m candle."}
+    return wait_result(base, "NONE", "NO CLEAR 1M ADVANTAGE",
+                       f"CALL score {max(0, call_score)}; PUT score {max(0, put_score)}. Wait for a clearer completed 1m candle.")
 
 # ============================================================
 # MULTI-PAIR SCANNER UI
@@ -561,7 +451,18 @@ SCAN_PAIRS = [
     "USD/CAD", "NZD/USD", "EUR/GBP", "EUR/JPY", "GBP/JPY",
 ]
 
-api_key = st.sidebar.text_input("Twelve Data API key", type="password")
+# Prefer the encrypted Streamlit Community Cloud Secret. A sidebar entry is
+# retained as a fallback for local testing or deployments without Secrets.
+try:
+    api_key = st.secrets.get("TWELVE_DATA_API_KEY", "")
+except Exception:
+    api_key = ""
+
+if not api_key:
+    api_key = st.sidebar.text_input("Twelve Data API key", type="password")
+else:
+    st.sidebar.success("Twelve Data API key loaded securely from app Secrets.")
+
 st.sidebar.subheader("Scanner settings")
 refresh_seconds = st.sidebar.selectbox(
     "Refresh interval",
@@ -579,7 +480,7 @@ st.sidebar.warning(
 )
 
 if not api_key:
-    st.info("Enter your Twelve Data API key in the sidebar to start scanning.")
+    st.info("Add TWELVE_DATA_API_KEY in Streamlit Secrets, or enter your Twelve Data API key in the sidebar.")
     st.stop()
 
 # Streamlit reruns every minute; this gate reduces repeated full scans if a longer
@@ -612,30 +513,13 @@ else:
             score = 0
             reasons = []
 
-            if t15.get("direction") in ("BULLISH", "BEARISH"):
-                score += 20
-                reasons.append("15m trend directional")
-            if t15.get("direction") == t5.get("direction") and t15.get("direction") in ("BULLISH", "BEARISH"):
-                score += 20
-                reasons.append("15m/5m aligned")
-            if t15.get("strength") == "Strong":
-                score += 15
-                reasons.append("strong 15m trend")
-            elif t15.get("strength") == "Moderate":
-                score += 10
-                reasons.append("moderate 15m trend")
-            if t5.get("strength") == "Strong":
-                score += 10
-                reasons.append("strong 5m trend")
-            elif t5.get("strength") == "Moderate":
-                score += 7
-                reasons.append("moderate 5m trend")
+            score = max(int(result.get("call_score", 0)), int(result.get("put_score", 0))) * 20
             if bb.get("confirmation"):
-                score += 20
-                reasons.append("Bollinger confirmation")
+                reasons.append("Bollinger context agrees")
             if result.get("signal") in ("PREPARE CALL", "PREPARE PUT"):
-                score += 15
-                reasons.append("all entry filters passed")
+                reasons.append("1m candle setup passed")
+            if t5.get("direction") == result.get("direction"):
+                reasons.append("5m context agrees (supporting only)")
 
             direction = t15.get("direction", "UNCLEAR")
             if direction == "BULLISH":
@@ -658,7 +542,8 @@ else:
                 "Setup score": score,
                 "15m trend": f'{t15.get("direction", "N/A")} ({t15.get("strength", "N/A")})',
                 "5m trend": f'{t5.get("direction", "N/A")} ({t5.get("strength", "N/A")})',
-                "Bollinger": "Confirmed" if bb.get("confirmation") else "Not confirmed",
+                "Bollinger": "Supporting context" if bb.get("confirmation") else "Neutral",
+                "Entry reference": result.get("entry_reference", "—"),
                 "Status / reason": status_text + " — " + result.get("reason", ""),
                 "_reasons": ", ".join(reasons) if reasons else "No directional confirmation",
                 "_raw_signal": result.get("signal", "WAIT"),
@@ -736,6 +621,7 @@ for item in results:
         "15m trend": item["15m trend"],
         "5m trend": item["5m trend"],
         "Bollinger": item["Bollinger"],
+        "Entry reference": item.get("Entry reference", "—"),
         "Status / reason": item["Status / reason"],
     })
 st.dataframe(
