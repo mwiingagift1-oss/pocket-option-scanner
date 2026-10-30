@@ -56,22 +56,6 @@ with st.sidebar:
     expiry = st.selectbox("Outcome-check expiry", [1, 2, 3, 5], index=0, format_func=lambda x: f"{x} minute(s)")
     run_scan = st.button("🔍 SCAN NOW", type="primary", use_container_width=True)
 
-def timing_panel():
-    now = datetime.now(ZAMBIA)
-    entry_time = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    expiry_time = entry_time + timedelta(minutes=1)
-    prep_seconds = max(0, int((entry_time - now).total_seconds()))
-    expiry_seconds = max(0, int((expiry_time - now).total_seconds()))
-    a, b, c = st.columns(3)
-    a.metric("PREPARE IN", f"{prep_seconds // 60:02d}:{prep_seconds % 60:02d}")
-    b.metric("NEXT ENTRY WINDOW", entry_time.strftime("%H:%M:%S"))
-    c.metric("1-MIN EXPIRY", expiry_time.strftime("%H:%M:%S"))
-    st.caption(f"Zambia time: {now.strftime('%H:%M:%S')}  ·  Expiry countdown: {expiry_seconds // 60:02d}:{expiry_seconds % 60:02d}")
-
-st.subheader("⏱️ TRADE TIMER")
-timing_panel()
-st.caption("Timer follows Zambia local time. Confirm the signal and live platform price before entry.")
-
 def fetch_candles(symbol: str, key: str, outputsize: int) -> pd.DataFrame:
     url = "https://api.twelvedata.com/time_series"
     response = requests.get(
@@ -240,11 +224,23 @@ if run_scan:
                 results.append({"pair": pair, "error": str(exc)})
             progress.progress((idx + 1) / len(selected_pairs))
         status.empty()
+        scan_now = datetime.now(ZAMBIA)
+        for item in results:
+            if "error" not in item and item["analysis"]["signal"] in ("CALL", "PUT"):
+                # Arm timers only when a fresh signal is found. Entry is planned for
+                # the next minute boundary; expiry is one minute after that.
+                entry_at = scan_now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+                item["timer"] = {
+                    "signal_found_at": scan_now,
+                    "entry_at": entry_at,
+                    "expiry_at": entry_at + timedelta(minutes=1),
+                }
         st.session_state["scan_results"] = results
-        st.session_state["scan_time"] = datetime.now(timezone.utc)
+        st.session_state["scan_time"] = scan_now
 
 if "scan_results" in st.session_state:
     st.subheader("📡 SIGNALS PAD")
+    st.markdown(f"**Zambia time (CAT):** {datetime.now(ZAMBIA).strftime('%H:%M:%S')}")
     scan_time = st.session_state.get("scan_time")
     if scan_time:
         st.caption(f"Last scan: {scan_time.astimezone(ZAMBIA).strftime('%d %b %Y · %H:%M:%S')} Zambia time")
@@ -276,7 +272,31 @@ if "scan_results" in st.session_state:
             right.markdown("**SETUP**")
             right.write(result.get("reason", "—"))
             if direction in ("CALL", "PUT"):
-                right.caption("Check the live Pocket Option price before entry.")
+                timer = item.get("timer")
+                if timer:
+                    now_local = datetime.now(ZAMBIA)
+                    entry_at = timer["entry_at"]
+                    expiry_at = timer["expiry_at"]
+                    prep_left = max(0, int((entry_at - now_local).total_seconds()))
+                    expiry_left = max(0, int((expiry_at - now_local).total_seconds()))
+                    if now_local < entry_at:
+                        timer_status = "PREPARING"
+                    elif now_local < expiry_at:
+                        timer_status = "ENTRY WINDOW"
+                    else:
+                        timer_status = "EXPIRED"
+                    right.markdown(f"**{timer_status}**")
+                    t1, t2, t3 = right.columns(3)
+                    t1.metric("PREPARE", f"{prep_left // 60:02d}:{prep_left % 60:02d}" if now_local < entry_at else "00:00")
+                    t2.metric("ENTRY · CAT", entry_at.strftime("%H:%M:%S"))
+                    t3.metric("EXPIRY · CAT", expiry_at.strftime("%H:%M:%S"))
+                    right.caption(f"Expiry countdown: {expiry_left // 60:02d}:{expiry_left % 60:02d} · Signal found: {timer['signal_found_at'].strftime('%H:%M:%S')} CAT")
+                    if timer_status == "EXPIRED":
+                        right.error("Signal expired. Scan again; do not use this old signal.")
+                    else:
+                        right.caption("Confirm the live Pocket Option price. Timer does not execute trades.")
+            else:
+                right.caption("No active setup — timers remain off until a CALL or PUT signal is found.")
             with st.expander(f"Chart · {item['pair']}"):
                 st.plotly_chart(chart_for(item["candles"], item["pair"]), use_container_width=True)
             if item["total"]:
