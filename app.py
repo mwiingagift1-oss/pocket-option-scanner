@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 # THREE STEPS — staircase-structure research scanner
 # Uses completed one-minute candles from Twelve Data.
@@ -19,6 +20,9 @@ PAIRS = [
 
 st.title("📈 THREE STEPS — Forex Staircase Scanner")
 st.caption("Recognizes directional staircases with pauses and pullbacks. Signals are estimates, not guaranteed trades.")
+
+# Refresh the clock display every second; this does not refresh market data.
+st_autorefresh(interval=1000, key="three_steps_clock")
 
 with st.sidebar:
     st.header("Scanner settings")
@@ -39,6 +43,29 @@ with st.sidebar:
 st.info(
     "Entry discipline: a CALL is a historical win only when the expiry candle closes above the recorded entry price; "
     "a PUT is a win only when it closes below. Equal closes are treated as non-wins."
+)
+
+def timing_panel():
+    now = datetime.now(timezone.utc)
+    entry_time = now.replace(second=0, microsecond=0) + pd.Timedelta(minutes=1)
+    expiry_time = entry_time + pd.Timedelta(minutes=1)
+    prep_seconds = max(0, int((entry_time - now).total_seconds()))
+    expiry_seconds = max(0, int((expiry_time - now).total_seconds()))
+    a, b, c = st.columns(3)
+    a.metric("1-minute preparation", f"{prep_seconds // 60:02d}:{prep_seconds % 60:02d}")
+    b.metric("Planned entry time (UTC)", entry_time.strftime("%H:%M:%S"))
+    c.metric("Planned 1-minute expiry (UTC)", expiry_time.strftime("%H:%M:%S"))
+    st.caption(
+        f"Current UTC time: {now.strftime('%H:%M:%S')} · "
+        f"Expiry countdown: {expiry_seconds // 60:02d}:{expiry_seconds % 60:02d}. "
+        "These are timing markers only, not a live trade instruction."
+    )
+
+st.subheader("Entry and expiry clock")
+timing_panel()
+st.warning(
+    "Run a fresh scan close to the planned entry time and confirm the signal is still valid. "
+    "The clock does not verify Pocket Option's price or reserve an entry."
 )
 
 def fetch_candles(symbol: str, key: str, outputsize: int) -> pd.DataFrame:
