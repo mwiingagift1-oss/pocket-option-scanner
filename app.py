@@ -1,5 +1,6 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -11,21 +12,36 @@ from streamlit_autorefresh import st_autorefresh
 # Uses completed one-minute candles from Twelve Data.
 # It is a research/alerting aid, not a guarantee of binary-option outcomes.
 
-st.set_page_config(page_title="THREE STEPS Forex Scanner", page_icon="📈", layout="wide")
+st.set_page_config(page_title="THREE STEPS", page_icon="📈", layout="wide")
+ZAMBIA = ZoneInfo("Africa/Lusaka")
+st.markdown("""
+<style>
+.block-container {padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1450px;}
+[data-testid="stMetric"] {background: #111827; border: 1px solid #263244; padding: 14px 16px; border-radius: 14px;}
+[data-testid="stMetricLabel"] {color: #9ca3af;}
+[data-testid="stMetricValue"] {font-weight: 750;}
+.signal-card {background: linear-gradient(135deg,#111827,#172235); border:1px solid #334155;
+border-radius:16px; padding:18px; margin:8px 0;}
+.signal-call {border-left:5px solid #22c55e;}
+.signal-put {border-left:5px solid #ef4444;}
+.signal-wait {border-left:5px solid #64748b;}
+.small-muted {color:#9ca3af;font-size:0.85rem;}
+</style>
+""", unsafe_allow_html=True)
 
 PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD",
     "USD/CAD", "NZD/USD", "EUR/GBP", "EUR/JPY", "GBP/JPY",
 ]
 
-st.title("📈 THREE STEPS — Forex Staircase Scanner")
-st.caption("Recognizes directional staircases with pauses and pullbacks. Signals are estimates, not guaranteed trades.")
+st.title("📈 THREE STEPS")
+st.caption("REAL FOREX  ·  1-MINUTE SCANNER  ·  ZAMBIA TIME")
 
 # Refresh the clock display every second; this does not refresh market data.
 st_autorefresh(interval=1000, key="three_steps_clock")
 
 with st.sidebar:
-    st.header("Scanner settings")
+    st.header("⚙️ SCANNER")
     api_key = st.text_input(
         "Twelve Data API key",
         value=st.secrets.get("TWELVE_DATA_API_KEY", os.getenv("TWELVE_DATA_API_KEY", "")),
@@ -33,40 +49,28 @@ with st.sidebar:
         help="You can also store this as TWELVE_DATA_API_KEY in Streamlit Secrets.",
     )
     selected_pairs = st.multiselect("Currency pairs", PAIRS, default=["EUR/USD", "GBP/USD", "USD/JPY"])
-    lookback = st.slider("Candles to analyze", 60, 300, 150, 10)
-    pivot_strength = st.slider("Swing confirmation sensitivity", 2, 5, 2)
-    min_steps = st.slider("Minimum directional steps", 3, 6, 3)
-    max_pullback = st.slider("Maximum pullback size (% of recent move)", 10, 80, 50, 5)
+    lookback = st.slider("History", 60, 300, 150, 10)
+    pivot_strength = st.slider("Swing sensitivity", 2, 5, 2)
+    min_steps = st.slider("Minimum steps", 3, 6, 3)
+    max_pullback = st.slider("Pullback allowance (%)", 10, 80, 50, 5)
     expiry = st.selectbox("Outcome-check expiry", [1, 2, 3, 5], index=0, format_func=lambda x: f"{x} minute(s)")
-    run_scan = st.button("Scan completed candles", type="primary", use_container_width=True)
-
-st.info(
-    "Entry discipline: a CALL is a historical win only when the expiry candle closes above the recorded entry price; "
-    "a PUT is a win only when it closes below. Equal closes are treated as non-wins."
-)
+    run_scan = st.button("🔍 SCAN NOW", type="primary", use_container_width=True)
 
 def timing_panel():
-    now = datetime.now(timezone.utc)
-    entry_time = now.replace(second=0, microsecond=0) + pd.Timedelta(minutes=1)
-    expiry_time = entry_time + pd.Timedelta(minutes=1)
+    now = datetime.now(ZAMBIA)
+    entry_time = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    expiry_time = entry_time + timedelta(minutes=1)
     prep_seconds = max(0, int((entry_time - now).total_seconds()))
     expiry_seconds = max(0, int((expiry_time - now).total_seconds()))
     a, b, c = st.columns(3)
-    a.metric("1-minute preparation", f"{prep_seconds // 60:02d}:{prep_seconds % 60:02d}")
-    b.metric("Planned entry time (UTC)", entry_time.strftime("%H:%M:%S"))
-    c.metric("Planned 1-minute expiry (UTC)", expiry_time.strftime("%H:%M:%S"))
-    st.caption(
-        f"Current UTC time: {now.strftime('%H:%M:%S')} · "
-        f"Expiry countdown: {expiry_seconds // 60:02d}:{expiry_seconds % 60:02d}. "
-        "These are timing markers only, not a live trade instruction."
-    )
+    a.metric("PREPARE IN", f"{prep_seconds // 60:02d}:{prep_seconds % 60:02d}")
+    b.metric("NEXT ENTRY WINDOW", entry_time.strftime("%H:%M:%S"))
+    c.metric("1-MIN EXPIRY", expiry_time.strftime("%H:%M:%S"))
+    st.caption(f"Zambia time: {now.strftime('%H:%M:%S')}  ·  Expiry countdown: {expiry_seconds // 60:02d}:{expiry_seconds % 60:02d}")
 
-st.subheader("Entry and expiry clock")
+st.subheader("⏱️ TRADE TIMER")
 timing_panel()
-st.warning(
-    "Run a fresh scan close to the planned entry time and confirm the signal is still valid. "
-    "The clock does not verify Pocket Option's price or reserve an entry."
-)
+st.caption("Timer follows Zambia local time. Confirm the signal and live platform price before entry.")
 
 def fetch_candles(symbol: str, key: str, outputsize: int) -> pd.DataFrame:
     url = "https://api.twelvedata.com/time_series"
@@ -89,7 +93,7 @@ def fetch_candles(symbol: str, key: str, outputsize: int) -> pd.DataFrame:
     df = pd.DataFrame(payload["values"])
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce").dt.tz_convert("Africa/Lusaka")
     df = df.dropna(subset=["datetime", "open", "high", "low", "close"])
     return df.sort_values("datetime").reset_index(drop=True)
 
@@ -240,39 +244,43 @@ if run_scan:
         st.session_state["scan_time"] = datetime.now(timezone.utc)
 
 if "scan_results" in st.session_state:
-    st.subheader("Latest scan")
-    for item in st.session_state["scan_results"]:
+    st.subheader("📡 SIGNALS PAD")
+    scan_time = st.session_state.get("scan_time")
+    if scan_time:
+        st.caption(f"Last scan: {scan_time.astimezone(ZAMBIA).strftime('%d %b %Y · %H:%M:%S')} Zambia time")
+    items = st.session_state["scan_results"]
+    valid = [x for x in items if "error" not in x]
+    calls = sum(x["analysis"]["signal"] == "CALL" for x in valid)
+    puts = sum(x["analysis"]["signal"] == "PUT" for x in valid)
+    waits = sum(x["analysis"]["signal"] == "WAIT" for x in valid)
+    a, b, c = st.columns(3)
+    a.metric("CALL", calls)
+    b.metric("PUT", puts)
+    c.metric("WAIT", waits)
+
+    for item in items:
+        if "error" in item:
+            with st.container(border=True):
+                st.error(f"{item['pair']}  ·  {item['error']}")
+            continue
+        result = item["analysis"]
+        direction = result["signal"]
+        css = "signal-call" if direction == "CALL" else "signal-put" if direction == "PUT" else "signal-wait"
+        icon = "🟢" if direction == "CALL" else "🔴" if direction == "PUT" else "⚪"
         with st.container(border=True):
-            if "error" in item:
-                st.error(f"{item['pair']}: {item['error']}")
-                continue
-            a = item["analysis"]
-            c1, c2, c3 = st.columns([1, 1, 2])
-            c1.metric(item["pair"], a["signal"])
-            c2.metric(f"Historical {expiry}m wins", f"{item['wins']}/{item['total']}" if item["total"] else "No samples")
-            c3.write(a["reason"])
-            st.plotly_chart(chart_for(item["candles"], f"{item['pair']} — recent completed candles"), use_container_width=True)
-            if a["signal"] in ("CALL", "PUT"):
-                st.warning(
-                    f"Research signal only. Reference close: {a['last_close']:.6f}. "
-                    "A live entry must be checked against the actual Pocket Option price and timing."
-                )
+            left, middle, right = st.columns([1.1, 1.1, 1.8])
+            left.markdown(f"### {item['pair']}")
+            left.markdown(f"<div class='signal-card {css}'><h2>{icon} {direction}</h2><span class='small-muted'>THREE STEPS</span></div>", unsafe_allow_html=True)
+            middle.metric("REFERENCE PRICE", f"{result['last_close']:.5f}" if result.get("last_close") else "—")
+            middle.metric(f"{expiry}M HISTORY", f"{item['wins']}/{item['total']}" if item["total"] else "No samples")
+            right.markdown("**SETUP**")
+            right.write(result.get("reason", "—"))
+            if direction in ("CALL", "PUT"):
+                right.caption("Check the live Pocket Option price before entry.")
+            with st.expander(f"Chart · {item['pair']}"):
+                st.plotly_chart(chart_for(item["candles"], item["pair"]), use_container_width=True)
             if item["total"]:
-                st.caption("Historical results use next-candle OPEN as entry and the selected future candle CLOSE as expiry. "
-                           "These are backtest observations, not a forecast or guaranteed win rate.")
-                with st.expander("Show historical signal outcomes"):
-                    st.dataframe(item["outcomes"].tail(30), use_container_width=True, hide_index=True)
+                with st.expander("Past signal results"):
+                    st.dataframe(item["outcomes"].tail(20), use_container_width=True, hide_index=True)
 
-st.divider()
-st.subheader("How this version works")
-st.markdown(
-    """
-    - **Staircase structure:** confirmed swing highs and lows are checked for higher-high/higher-low or lower-high/lower-low progression.
-    - **Pullbacks:** opposite candles and pauses are allowed; candle color streaks are not required.
-    - **Resumption:** the latest completed candle must move beyond the previous candle's high/low in the staircase direction.
-    - **Late-entry caution:** signals are withheld when price is unusually extended from EMA 9.
-    - **Expiry evaluation:** historical CALLs count as wins only if expiry close is above entry; PUTs only if expiry close is below entry. Equality is a non-win.
-
-    **Important limitations:** pivot confirmation introduces delay; this first version is deliberately conservative and may miss valid patterns. The historical sample is small and uses Twelve Data prices, which may differ from Pocket Option. Do not use the displayed historical win rate as a reliable probability without much larger out-of-sample testing and demo verification.
-    """
-)
+st.caption("Feed: Twelve Data  ·  App clock: Africa/Lusaka")
