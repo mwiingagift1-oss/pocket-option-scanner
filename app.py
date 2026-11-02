@@ -176,10 +176,12 @@ with st.sidebar:
     expiry=st.selectbox('Signal expiry',[1,2,3,5],index=0,format_func=lambda n:f'{n} minute(s)')
     candles_count=st.slider('Candles to analyze',80,300,160,20)
     auto_refresh=st.checkbox('Refresh dashboard clock every second',value=True)
+    auto_scan=st.checkbox('Automatically scan every minute',value=True)
+    st.caption('Automatic scans use the selected market engine and its current settings.')
     st.divider()
     if market.startswith('Pocket'):
         api_key=st.text_input('Twelve Data API key',value=st.secrets.get('TWELVE_DATA_API_KEY',os.getenv('TWELVE_DATA_API_KEY','')),type='password')
-        pairs=st.multiselect('Forex pairs',FOREX_PAIRS,default=['EUR/USD','GBP/USD','USD/JPY'])
+        pairs=st.multiselect('Forex pairs',FOREX_PAIRS,default=FOREX_PAIRS)
         pivot_strength=st.slider('Swing confirmation',2,4,2)
         min_steps=st.slider('Minimum staircase steps',3,5,3)
         pullback_pct=st.slider('Maximum pullback (%)',20,70,50,5)
@@ -194,8 +196,17 @@ if auto_refresh: st_autorefresh(interval=1000,key='desk_clock')
 now=now_cat()
 st.caption(f'LOCAL TIME · {now.strftime("%A, %d %B %Y · %H:%M:%S CAT")}')
 
-if scan:
+# Scan once per new CAT minute. The one-second refresh only updates the clock/UI.
+minute_key=now.strftime('%Y-%m-%d %H:%M')
+last_auto_scan=st.session_state.get('last_auto_scan_minute')
+auto_scan_due=bool(auto_scan and minute_key != last_auto_scan)
+if auto_scan_due:
+    st.session_state['last_auto_scan_minute']=minute_key
+run_scan=bool(scan or auto_scan_due)
+if run_scan:
     st.session_state.pop('active_signal',None)
+    if auto_scan_due:
+        st.caption(f'Automatic scan started · {now.strftime("%H:%M CAT")}')
     if market.startswith('Pocket'):
         if not api_key: st.error('Add your Twelve Data key in the sidebar or Streamlit Secrets.')
         elif not pairs: st.warning('Select at least one forex pair.')
