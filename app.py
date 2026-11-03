@@ -60,33 +60,80 @@ def confirmed_pivots(df, strength):
         if l[i] == wl.min() and (wl == l[i]).sum() == 1: lows.append((i,float(l[i])))
     return highs, lows
 
+def _swing_sequence_direction(points, direction, tolerance):
+    """Allow small imperfect swing steps while preserving the overall micro-trend."""
+    if len(points) < 3:
+        return False
+    values = [point[1] for point in points]
+    deltas = [b-a for a,b in zip(values, values[1:])]
+    if direction == 'up':
+        advances = sum(delta > tolerance for delta in deltas)
+        pullbacks = sum(delta < -tolerance for delta in deltas)
+        return values[-1] > values[0] + tolerance and advances >= 1 and pullbacks <= 1
+    advances = sum(delta < -tolerance for delta in deltas)
+    pullbacks = sum(delta > tolerance for delta in deltas)
+    return values[-1] < values[0] - tolerance and advances >= 1 and pullbacks <= 1
+
 def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
-    if len(df) < 50: return blank_result('Waiting for enough completed candles.')
-    highs,lows = confirmed_pivots(df,strength)
-    # Use a bounded recent sequence; each swing must advance in the same direction.
-    hs,ls = highs[-min_steps:],lows[-min_steps:]
-    if len(hs)<min_steps or len(ls)<min_steps: return blank_result('Waiting for confirmed swing structure.')
-    bullish = all(hs[i][1]>hs[i-1][1] for i in range(1,len(hs))) and all(ls[i][1]>ls[i-1][1] for i in range(1,len(ls)))
-    bearish = all(hs[i][1]<hs[i-1][1] for i in range(1,len(hs))) and all(ls[i][1]<ls[i-1][1] for i in range(1,len(ls)))
-    c=df.close; e9=c.ewm(span=9,adjust=False).mean(); e21=c.ewm(span=21,adjust=False).mean()
-    mid=c.rolling(20).mean(); std=c.rolling(20).std()
-    last,prev=df.iloc[-1],df.iloc[-2]
-    bar_med=float((df.high-df.low).tail(20).median())
-    extension=abs(float(last.close-e9.iloc[-1]))
-    # Measure the latest counter-move against the preceding directional leg.
-    tail=df.tail(12); move=float(tail.high.max()-tail.low.min())
-    recent_pullback=float((tail.high.max()-tail.close.iloc[-1]) if bullish else (tail.close.iloc[-1]-tail.low.min()))
-    pullback_ok = move <= 0 or recent_pullback <= move*(pullback_pct/100)
-    late = bar_med>0 and extension>2.5*bar_med
-    call = bullish and e9.iloc[-1]>e21.iloc[-1] and last.close>mid.iloc[-1] and last.close>prev.high and pullback_ok and not late
-    put = bearish and e9.iloc[-1]<e21.iloc[-1] and last.close<mid.iloc[-1] and last.close<prev.low and pullback_ok and not late
-    sig='CALL' if call else 'PUT' if put else 'WAIT'
-    why = ('Confirmed higher highs/higher lows with upward resumption.' if call else
-           'Confirmed lower highs/lower lows with downward resumption.' if put else
-           'No fresh, confirmed staircase entry. Wait; do not chase.')
-    return {'signal':sig,'reason':why,'price':float(last.close),'candle_time':last.datetime,
-            'ema9':float(e9.iloc[-1]),'ema21':float(e21.iloc[-1]),'upper':float((mid+2*std).iloc[-1]),
-            'lower':float((mid-2*std).iloc[-1]),'highs':hs,'lows':ls}
+    """Micro-trend layer: PREPARE on structure, ENTRY only after candle confirmation."""
+    if len(df) < 50:
+        return {**blank_result('Waiting for enough completed candles.'), 'stage':'WAIT', 'bias':'NONE'}
+    highs, lows = confirmed_pivots(df, strength)
+    hs, ls = highs[-max(min_steps, 4):], lows[-max(min_steps, 4):]
+    if len(hs) < min_steps or len(ls) < min_steps:
+        return {**blank_result('Waiting for at least three confirmed swing highs and lows.'), 'stage':'WAIT', 'bias':'NONE'}
+
+    c = df.close
+    e9 = c.ewm(span=9, adjust=False).mean()
+    e21 = c.ewm(span=21, adjust=False).mean()
+    mid = c.rolling(20).mean()
+    std = c.rolling(20).std()
+    last, prev = df.iloc[-1], df.iloc[-2]
+    bar_med = float((df.high-df.low).tail(20).median())
+    tolerance = max(abs(float(last.close))*0.000015, bar_med*0.10)
+    recent_h, recent_l = hs[-min_steps:], ls[-min_steps:]
+    bull_structure = (_swing_sequence_direction(recent_h, 'up', tolerance) and
+                      _swing_sequence_direction(recent_l, 'up', tolerance))
+    bear_structure = (_swing_sequence_direction(recent_h, 'down', tolerance) and
+                      _swing_sequence_direction(recent_l, 'down', tolerance))
+
+    # Permit small countertrend candles and pullbacks inside the staircase.
+    tail = df.tail(12)
+    total_range = float(tail.high.max()-tail.low.min())
+    bull_pullback = float(tail.high.max()-last.close)
+    bear_pullback = float(last.close-tail.low.min())
+    limit = max(0.20, min(0.70, pullback_pct/100))
+    bull_pullback_ok = total_range <= 0 or bull_pullback <= total_range*limit
+    bear_pullback_ok = total_range <= 0 or bear_pullback <= total_range*limit
+
+    bull_context = bull_structure and e9.iloc[-1] >= e21.iloc[-1] and last.close >= mid.iloc[-1] and bull_pullback_ok
+    bear_context = bear_structure and e9.iloc[-1] <= e21.iloc[-1] and last.close <= mid.iloc[-1] and bear_pullback_ok
+    bull_confirm = last.close > last.open and (last.close > prev.high or last.close > prev.close)
+    bear_confirm = last.close < last.open and (last.close < prev.low or last.close < prev.close)
+    extension = abs(float(last.close-e9.iloc[-1]))
+    late = bar_med > 0 and extension > 3.5*bar_med
+
+    if bull_context and bull_confirm and not late:
+        sig, stage, bias = 'CALL', 'ENTRY', 'BULLISH'
+        why = 'Bullish micro-staircase confirmed: higher highs and higher lows with continuation.'
+    elif bear_context and bear_confirm and not late:
+        sig, stage, bias = 'PUT', 'ENTRY', 'BEARISH'
+        why = 'Bearish micro-staircase confirmed: lower highs and lower lows with continuation.'
+    elif bull_context:
+        sig, stage, bias = 'WAIT', 'PREPARE', 'BULLISH'
+        why = 'Bullish micro-staircase developing. Wait for a bullish continuation candle.'
+    elif bear_context:
+        sig, stage, bias = 'WAIT', 'PREPARE', 'BEARISH'
+        why = 'Bearish micro-staircase developing. Wait for a bearish continuation candle.'
+    else:
+        sig, stage, bias = 'WAIT', 'WAIT', 'NONE'
+        why = 'No qualifying micro-staircase yet. Small countertrend candles are allowed.'
+
+    return {'signal':sig, 'stage':stage, 'bias':bias, 'reason':why,
+            'price':float(last.close), 'candle_time':last.datetime,
+            'ema9':float(e9.iloc[-1]), 'ema21':float(e21.iloc[-1]),
+            'upper':float((mid+2*std).iloc[-1]), 'lower':float((mid-2*std).iloc[-1]),
+            'highs':hs, 'lows':ls, 'tolerance':tolerance}
 
 # --- Deriv public market data ---
 def deriv_request(payload, timeout=15):
@@ -164,24 +211,6 @@ def show_signal_pad(signal):
     elif status=='ENTRY WINDOW': st.info('Entry window is active. Confirm the live platform quote before acting.')
     else: st.info('Preparation only. The timer is linked to this valid signal, not a standing countdown.')
 
-def add_signal_to_history(market, instrument, result):
-    if result.get('signal') not in ('CALL', 'PUT'):
-        return
-    key = f"{market}|{instrument}|{pd.Timestamp(result['candle_time']).isoformat()}|{result['signal']}"
-    history = st.session_state.setdefault('trade_history', [])
-    if any(x.get('key') == key for x in history):
-        return
-    created = now_cat()
-    history.insert(0, {
-        'key': key, 'market': market, 'instrument': instrument,
-        'direction': result['signal'], 'signal_time': created.isoformat(),
-        'candle_time': as_cat(result['candle_time']).isoformat(),
-        'reference_price': float(result['price']), 'expiry_minutes': 1,
-        'status': 'PENDING', 'entry_price': None, 'expiry_price': None,
-        'outcome': None
-    })
-    del history[200:]
-
 def chart(df,title):
     v=df.tail(100); fig=go.Figure(go.Candlestick(x=v.datetime,open=v.open,high=v.high,low=v.low,close=v.close,name='1m'))
     fig.update_layout(title=title,height=380,xaxis_rangeslider_visible=False,margin=dict(l=10,r=10,t=40,b=10))
@@ -195,6 +224,7 @@ with st.sidebar:
     candles_count=st.slider('Candles to analyze',80,300,160,20)
     auto_refresh=st.checkbox('Refresh dashboard clock every second',value=True)
     auto_scan=st.checkbox('Automatically scan every minute',value=True)
+    sound_alerts=st.checkbox('Enable sound alerts',value=st.session_state.get('sound_alerts_enabled',False),key='sound_alerts_enabled')
     st.caption('Automatic scans use the selected market engine and its current settings.')
     st.divider()
     if market.startswith('Pocket'):
@@ -236,7 +266,6 @@ if run_scan:
                     df=fetch_forex(pair,api_key,candles_count)
                     result=three_steps(df,pivot_strength,min_steps,pullback_pct)
                     output.append({'instrument':pair,'df':df,'result':result})
-                    add_signal_to_history('Pocket Option Forex', pair, result)
                 except Exception as e: output.append({'instrument':pair,'error':str(e)})
                 bar.progress((i+1)/len(pairs))
             note.empty(); st.session_state['scan_output']=output; st.session_state['scan_market']='forex'
@@ -264,7 +293,42 @@ if run_scan:
 
 # Signal pad at top, regardless of market.
 st.subheader('SIGNALS PAD')
-show_signal_pad(st.session_state.get('active_signal'))
+active_signal = st.session_state.get('active_signal')
+show_signal_pad(active_signal)
+
+# Play one short browser beep for each newly detected signal.
+# Browsers may require the user to enable sound once before autoplay is allowed.
+if sound_alerts and active_signal and active_signal.get('direction') in ('CALL', 'PUT'):
+    sound_key = '|'.join(str(active_signal.get(k, '')) for k in ('market', 'instrument', 'direction', 'candle_time'))
+    if st.session_state.get('last_sound_signal_key') != sound_key:
+        st.session_state['last_sound_signal_key'] = sound_key
+        audio_html = """
+        <html><body style="margin:0;background:transparent">
+        <script>
+        (() => {
+          try {
+            const Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return;
+            const ctx = new Ctx();
+            const playTone = (freq, start, duration) => {
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.type = 'sine';
+              osc.frequency.value = freq;
+              gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+              gain.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + start + 0.025);
+              gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
+              osc.connect(gain); gain.connect(ctx.destination);
+              osc.start(ctx.currentTime + start);
+              osc.stop(ctx.currentTime + start + duration + 0.02);
+            };
+            const run = () => { playTone(880, 0, 0.16); playTone(1175, 0.20, 0.22); };
+            if (ctx.state === 'suspended') ctx.resume().then(run); else run();
+          } catch (e) { /* Audio is optional; signal remains visible. */ }
+        })();
+        </script></body></html>
+        """
+        st.components.v1.html(audio_html, height=1, scrolling=False)
 
 if market.startswith('Pocket'):
     st.subheader('THREE STEPS · Forex scanner')
@@ -273,10 +337,11 @@ if market.startswith('Pocket'):
     for item in results:
         with st.container(border=True):
             if 'error' in item: st.error(f'{item["instrument"]}: {item["error"]}'); continue
-            res=item['result']; col1,col2,col3=st.columns([2,1,3])
+            res=item['result']; col1,col2,col3,col4=st.columns([2,1,1,4])
             col1.markdown(f'**{item["instrument"]}**')
             col2.metric('Signal',res['signal'])
-            col3.write(res['reason'])
+            col3.metric('Stage',res.get('stage','WAIT'))
+            col4.write(f"{res.get('bias','NONE')} · {res['reason']}")
             with st.expander('Chart & details'):
                 st.plotly_chart(chart(item['df'],item['instrument']),use_container_width=True)
                 if 'price' in res: st.write(f'Last completed close: {fmt_price(res["price"])} · EMA 9: {fmt_price(res["ema9"])} · EMA 21: {fmt_price(res["ema21"])}')
@@ -298,59 +363,6 @@ else:
                 r=out['result']
                 if 'range_high' in r: st.write(f'Resistance: {fmt_price(r["range_high"])} · Support: {fmt_price(r["range_low"])} · ATR: {fmt_price(r["atr"])}')
     else: st.caption('Press CONNECT & SCAN DERIV to discover available Range Break instruments.')
-
-
-# --- Pocket Option one-minute trade outcome tracker ---
-st.subheader('POCKET OPTION · TRADE RESULTS')
-st.caption('For accurate results, enter the actual Pocket Option entry quote and the quote shown at the end of the 1-minute expiry. The scanner feed is not used to settle trades.')
-history = st.session_state.setdefault('trade_history', [])
-pending = [x for x in history if x.get('status') == 'PENDING']
-if pending:
-    labels = {f"{x['instrument']} · {x['direction']} · {datetime.fromisoformat(x['signal_time']).strftime('%H:%M:%S CAT')} · Ref {fmt_price(x['reference_price'])}": x['key'] for x in pending}
-    selected_label = st.selectbox('Select the signal you traded', list(labels), key='result_signal_select')
-    selected_key = labels[selected_label]
-    selected_trade = next(x for x in pending if x['key'] == selected_key)
-    st.write(f"**Direction:** {selected_trade['direction']}  ·  **Expiry:** 1 minute  ·  **Reference:** {fmt_price(selected_trade['reference_price'])}")
-    with st.form('pocket_option_result_form'):
-        entry_quote = st.number_input('Actual Pocket Option entry price', min_value=0.0, format='%.6f', key='po_entry_quote')
-        expiry_quote = st.number_input('Pocket Option price at 1-minute expiry', min_value=0.0, format='%.6f', key='po_expiry_quote')
-        submitted = st.form_submit_button('RECORD TRADE RESULT', type='primary')
-    if submitted:
-        if entry_quote <= 0 or expiry_quote <= 0:
-            st.error('Enter both actual Pocket Option prices.')
-        else:
-            trade = next(x for x in history if x['key'] == selected_key)
-            trade['entry_price'] = float(entry_quote)
-            trade['expiry_price'] = float(expiry_quote)
-            if expiry_quote == entry_quote:
-                outcome = 'DRAW'
-            elif (trade['direction'] == 'CALL' and expiry_quote > entry_quote) or (trade['direction'] == 'PUT' and expiry_quote < entry_quote):
-                outcome = 'WON'
-            else:
-                outcome = 'LOST'
-            trade['outcome'] = outcome
-            trade['status'] = outcome
-            st.rerun()
-else:
-    st.info('No unrecorded Pocket Option signals yet. Valid CALL and PUT signals will be added here during automatic scans.')
-
-completed = [x for x in history if x.get('status') in ('WON', 'LOST', 'DRAW')]
-wins = sum(x['status'] == 'WON' for x in completed)
-losses = sum(x['status'] == 'LOST' for x in completed)
-draws = sum(x['status'] == 'DRAW' for x in completed)
-settled = wins + losses
-m1, m2, m3, m4 = st.columns(4)
-m1.metric('Wins', wins); m2.metric('Losses', losses); m3.metric('Draws', draws)
-m4.metric('Win rate', f'{(wins / settled * 100):.1f}%' if settled else '—')
-if history:
-    view = [{
-        'Time (CAT)': datetime.fromisoformat(x['signal_time']).strftime('%Y-%m-%d %H:%M:%S'),
-        'Pair': x['instrument'], 'Signal': x['direction'],
-        'Entry (PO)': x['entry_price'], 'Expiry (PO)': x['expiry_price'],
-        'Result': x['status']
-    } for x in history]
-    st.dataframe(pd.DataFrame(view), use_container_width=True, hide_index=True)
-    st.caption('Results are held in this Streamlit session. They may reset if the app restarts or the session is cleared.')
 
 st.divider()
 st.caption('Research and alerting only — not financial advice. Data feeds can differ from Pocket Option/Deriv display quotes. Confirm the live price and candle timing on the trading platform. No signal guarantees a profitable outcome.')
