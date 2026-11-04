@@ -14,7 +14,8 @@ except ImportError:
     websocket = None
 
 TZ = ZoneInfo('Africa/Lusaka')
-DERIV_APP_ID = os.getenv('DERIV_APP_ID', '1089')
+# Public Deriv application identifier. Streamlit Secrets / environment can override it.
+DERIV_APP_ID = os.getenv('DERIV_APP_ID', '34RmykWCl4bCGcD5achAQ')
 FOREX_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY']
 
 st.set_page_config(page_title='Market Signal Desk', page_icon='📡', layout='wide')
@@ -60,107 +61,143 @@ def confirmed_pivots(df, strength):
         if l[i] == wl.min() and (wl == l[i]).sum() == 1: lows.append((i,float(l[i])))
     return highs, lows
 
-def _swing_sequence_direction(points, direction, tolerance):
-    """Allow small imperfect swing steps while preserving the overall micro-trend."""
-    if len(points) < 3:
-        return False
-    values = [point[1] for point in points]
-    deltas = [b-a for a,b in zip(values, values[1:])]
-    if direction == 'up':
-        advances = sum(delta > tolerance for delta in deltas)
-        pullbacks = sum(delta < -tolerance for delta in deltas)
-        return values[-1] > values[0] + tolerance and advances >= 1 and pullbacks <= 1
-    advances = sum(delta < -tolerance for delta in deltas)
-    pullbacks = sum(delta > tolerance for delta in deltas)
-    return values[-1] < values[0] - tolerance and advances >= 1 and pullbacks <= 1
-
 def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
-    """Micro-trend layer: PREPARE on structure, ENTRY only after candle confirmation."""
-    if len(df) < 50:
-        return {**blank_result('Waiting for enough completed candles.'), 'stage':'WAIT', 'bias':'NONE'}
-    highs, lows = confirmed_pivots(df, strength)
-    hs, ls = highs[-max(min_steps, 4):], lows[-max(min_steps, 4):]
-    if len(hs) < min_steps or len(ls) < min_steps:
-        return {**blank_result('Waiting for at least three confirmed swing highs and lows.'), 'stage':'WAIT', 'bias':'NONE'}
-
-    c = df.close
-    e9 = c.ewm(span=9, adjust=False).mean()
-    e21 = c.ewm(span=21, adjust=False).mean()
-    mid = c.rolling(20).mean()
-    std = c.rolling(20).std()
-    last, prev = df.iloc[-1], df.iloc[-2]
-    bar_med = float((df.high-df.low).tail(20).median())
-    tolerance = max(abs(float(last.close))*0.000015, bar_med*0.10)
-    recent_h, recent_l = hs[-min_steps:], ls[-min_steps:]
-    bull_structure = (_swing_sequence_direction(recent_h, 'up', tolerance) and
-                      _swing_sequence_direction(recent_l, 'up', tolerance))
-    bear_structure = (_swing_sequence_direction(recent_h, 'down', tolerance) and
-                      _swing_sequence_direction(recent_l, 'down', tolerance))
-
-    # Permit small countertrend candles and pullbacks inside the staircase.
-    tail = df.tail(12)
-    total_range = float(tail.high.max()-tail.low.min())
-    bull_pullback = float(tail.high.max()-last.close)
-    bear_pullback = float(last.close-tail.low.min())
-    limit = max(0.20, min(0.70, pullback_pct/100))
-    bull_pullback_ok = total_range <= 0 or bull_pullback <= total_range*limit
-    bear_pullback_ok = total_range <= 0 or bear_pullback <= total_range*limit
-
-    bull_context = bull_structure and e9.iloc[-1] >= e21.iloc[-1] and last.close >= mid.iloc[-1] and bull_pullback_ok
-    bear_context = bear_structure and e9.iloc[-1] <= e21.iloc[-1] and last.close <= mid.iloc[-1] and bear_pullback_ok
-    bull_confirm = last.close > last.open and (last.close > prev.high or last.close > prev.close)
-    bear_confirm = last.close < last.open and (last.close < prev.low or last.close < prev.close)
-    extension = abs(float(last.close-e9.iloc[-1]))
-    late = bar_med > 0 and extension > 3.5*bar_med
-
-    if bull_context and bull_confirm and not late:
-        sig, stage, bias = 'CALL', 'ENTRY', 'BULLISH'
-        why = 'Bullish micro-staircase confirmed: higher highs and higher lows with continuation.'
-    elif bear_context and bear_confirm and not late:
-        sig, stage, bias = 'PUT', 'ENTRY', 'BEARISH'
-        why = 'Bearish micro-staircase confirmed: lower highs and lower lows with continuation.'
-    elif bull_context:
-        sig, stage, bias = 'WAIT', 'PREPARE', 'BULLISH'
-        why = 'Bullish micro-staircase developing. Wait for a bullish continuation candle.'
-    elif bear_context:
-        sig, stage, bias = 'WAIT', 'PREPARE', 'BEARISH'
-        why = 'Bearish micro-staircase developing. Wait for a bearish continuation candle.'
-    else:
-        sig, stage, bias = 'WAIT', 'WAIT', 'NONE'
-        why = 'No qualifying micro-staircase yet. Small countertrend candles are allowed.'
-
-    return {'signal':sig, 'stage':stage, 'bias':bias, 'reason':why,
-            'price':float(last.close), 'candle_time':last.datetime,
-            'ema9':float(e9.iloc[-1]), 'ema21':float(e21.iloc[-1]),
-            'upper':float((mid+2*std).iloc[-1]), 'lower':float((mid-2*std).iloc[-1]),
-            'highs':hs, 'lows':ls, 'tolerance':tolerance}
+    if len(df) < 50: return blank_result('Waiting for enough completed candles.')
+    highs,lows = confirmed_pivots(df,strength)
+    # Use a bounded recent sequence; each swing must advance in the same direction.
+    hs,ls = highs[-min_steps:],lows[-min_steps:]
+    if len(hs)<min_steps or len(ls)<min_steps: return blank_result('Waiting for confirmed swing structure.')
+    bullish = all(hs[i][1]>hs[i-1][1] for i in range(1,len(hs))) and all(ls[i][1]>ls[i-1][1] for i in range(1,len(ls)))
+    bearish = all(hs[i][1]<hs[i-1][1] for i in range(1,len(hs))) and all(ls[i][1]<ls[i-1][1] for i in range(1,len(ls)))
+    c=df.close; e9=c.ewm(span=9,adjust=False).mean(); e21=c.ewm(span=21,adjust=False).mean()
+    mid=c.rolling(20).mean(); std=c.rolling(20).std()
+    last,prev=df.iloc[-1],df.iloc[-2]
+    bar_med=float((df.high-df.low).tail(20).median())
+    extension=abs(float(last.close-e9.iloc[-1]))
+    # Measure the latest counter-move against the preceding directional leg.
+    tail=df.tail(12); move=float(tail.high.max()-tail.low.min())
+    recent_pullback=float((tail.high.max()-tail.close.iloc[-1]) if bullish else (tail.close.iloc[-1]-tail.low.min()))
+    pullback_ok = move <= 0 or recent_pullback <= move*(pullback_pct/100)
+    late = bar_med>0 and extension>2.5*bar_med
+    call = bullish and e9.iloc[-1]>e21.iloc[-1] and last.close>mid.iloc[-1] and last.close>prev.high and pullback_ok and not late
+    put = bearish and e9.iloc[-1]<e21.iloc[-1] and last.close<mid.iloc[-1] and last.close<prev.low and pullback_ok and not late
+    sig='CALL' if call else 'PUT' if put else 'WAIT'
+    why = ('Confirmed higher highs/higher lows with upward resumption.' if call else
+           'Confirmed lower highs/lower lows with downward resumption.' if put else
+           'No fresh, confirmed staircase entry. Wait; do not chase.')
+    return {'signal':sig,'reason':why,'price':float(last.close),'candle_time':last.datetime,
+            'ema9':float(e9.iloc[-1]),'ema21':float(e21.iloc[-1]),'upper':float((mid+2*std).iloc[-1]),
+            'lower':float((mid-2*std).iloc[-1]),'highs':hs,'lows':ls}
 
 # --- Deriv public market data ---
-def deriv_request(payload, timeout=15):
-    if websocket is None: raise RuntimeError('Install websocket-client to connect to Deriv.')
-    ws=websocket.create_connection(f'wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}', timeout=timeout)
-    try:
-        ws.send(json.dumps(payload)); deadline=time.time()+timeout
-        while time.time()<deadline:
-            msg=json.loads(ws.recv())
-            if msg.get('error'): raise RuntimeError(msg['error'].get('message','Deriv API error'))
-            if 'candles' in msg or 'active_symbols' in msg: return msg
-        raise TimeoutError('Deriv did not respond in time.')
-    finally: ws.close()
+class DerivClient:
+    """One reusable public WebSocket connection for a complete scan batch."""
+    def __init__(self, timeout=15):
+        if websocket is None:
+            raise RuntimeError('Install websocket-client to connect to Deriv.')
+        if not DERIV_APP_ID:
+            raise RuntimeError('Set DERIV_APP_ID in Streamlit Secrets.')
+        self.timeout = timeout
+        self.ws = None
+        self.req_id = 0
+        self.last_activity = time.monotonic()
+        self.connect()
 
-def deriv_symbols():
-    data=deriv_request({'active_symbols':'brief',' product_type':'basic'}) if False else deriv_request({'active_symbols':'brief','product_type':'basic'})
-    return data.get('active_symbols',[])
+    @property
+    def url(self):
+        return f'wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}'
 
-def fetch_deriv_candles(symbol,count):
-    data=deriv_request({'ticks_history':symbol,'adjust_start_time':1,'count':count+2,'end':'latest','granularity':60,'style':'candles'})
-    df=pd.DataFrame(data.get('candles',[]))
-    if df.empty: raise RuntimeError('No candle history returned for this Deriv symbol.')
-    for c in ['open','high','low','close']: df[c]=pd.to_numeric(df[c],errors='coerce')
-    df['datetime']=pd.to_datetime(df.epoch,unit='s',utc=True)
-    df=df.dropna(subset=['open','high','low','close']).sort_values('datetime').reset_index(drop=True)
-    # Deriv's latest candle can still be forming; exclude it.
-    if len(df)>1: df=df.iloc[:-1].copy()
+    def connect(self):
+        last_error = None
+        for attempt in range(3):
+            try:
+                self.close()
+                self.ws = websocket.create_connection(self.url, timeout=self.timeout)
+                self.ws.settimeout(self.timeout)
+                self.last_activity = time.monotonic()
+                return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.5 * (attempt + 1))
+        raise RuntimeError(f'Could not connect to Deriv after 3 attempts: {last_error}')
+
+    def close(self):
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+
+    def _exchange(self, payload):
+        self.req_id += 1
+        request = dict(payload)
+        request['req_id'] = self.req_id
+        self.ws.send(json.dumps(request))
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            raw = self.ws.recv()
+            if not raw:
+                continue
+            message = json.loads(raw)
+            self.last_activity = time.monotonic()
+            if message.get('req_id') != self.req_id:
+                continue
+            if message.get('error'):
+                error = message['error']
+                raise RuntimeError(error.get('message', 'Deriv API error'))
+            return message
+        raise TimeoutError('Deriv did not respond before the request timed out.')
+
+    def request(self, payload):
+        # Keep the same socket alive during a scan and ping after long idle gaps.
+        for attempt in range(2):
+            try:
+                if self.ws is None:
+                    self.connect()
+                if time.monotonic() - self.last_activity > 50:
+                    self._exchange({'ping': 1})
+                return self._exchange(payload)
+            except Exception:
+                self.close()
+                if attempt:
+                    raise
+                self.connect()
+        raise RuntimeError('Deriv request failed.')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+
+def deriv_symbols(client=None):
+    if client is not None:
+        data = client.request({'active_symbols': 'brief', 'product_type': 'basic'})
+        return data.get('active_symbols', [])
+    with DerivClient() as temporary_client:
+        return deriv_symbols(temporary_client)
+
+
+def fetch_deriv_candles(symbol, count, client=None):
+    if client is not None:
+        data = client.request({'ticks_history': symbol, 'adjust_start_time': 1,
+                               'count': count + 2, 'end': 'latest',
+                               'granularity': 60, 'style': 'candles'})
+    else:
+        with DerivClient() as temporary_client:
+            return fetch_deriv_candles(symbol, count, temporary_client)
+    df = pd.DataFrame(data.get('candles', []))
+    if df.empty:
+        raise RuntimeError(f'No candle history returned for Deriv symbol {symbol}.')
+    for c in ['open', 'high', 'low', 'close']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df['datetime'] = pd.to_datetime(df.epoch, unit='s', utc=True)
+    df = df.dropna(subset=['open', 'high', 'low', 'close']).sort_values('datetime').reset_index(drop=True)
+    # Exclude the latest candle because it may still be forming.
+    if len(df) > 1:
+        df = df.iloc[:-1].copy()
     return df.tail(count).reset_index(drop=True)
 
 def ghost_protocol(df, lookback=24, retest_bars=5):
@@ -224,7 +261,6 @@ with st.sidebar:
     candles_count=st.slider('Candles to analyze',80,300,160,20)
     auto_refresh=st.checkbox('Refresh dashboard clock every second',value=True)
     auto_scan=st.checkbox('Automatically scan every minute',value=True)
-    sound_alerts=st.checkbox('Enable sound alerts',value=st.session_state.get('sound_alerts_enabled',False),key='sound_alerts_enabled')
     st.caption('Automatic scans use the selected market engine and its current settings.')
     st.divider()
     if market.startswith('Pocket'):
@@ -277,13 +313,15 @@ if run_scan:
     else:
         with st.spinner('Discovering Deriv symbols…'):
             try:
-                symbols=deriv_symbols()
-                matches=[s for s in symbols if any(k in (s.get('display_name','')+' '+s.get('symbol','')).lower() for k in ['range break','range_break','rangebreak'])]
-                st.session_state['deriv_matches']=matches
-                if not matches: raise RuntimeError('No Range Break instruments were found in Deriv active symbols. Check the exact instrument names available in your Deriv account/platform.')
-                chosen_symbol=st.session_state.get('chosen_deriv_symbol',matches[0]['symbol'])
-                selected=next((s for s in matches if s['symbol']==chosen_symbol),matches[0])
-                df=fetch_deriv_candles(selected['symbol'],candles_count)
+                # Reuse one socket for symbol discovery and candle retrieval.
+                with DerivClient(timeout=15) as deriv:
+                    symbols=deriv_symbols(deriv)
+                    matches=[s for s in symbols if any(k in (s.get('display_name','')+' '+s.get('symbol','')).lower() for k in ['range break','range_break','rangebreak'])]
+                    st.session_state['deriv_matches']=matches
+                    if not matches: raise RuntimeError('No Range Break instruments were found in Deriv public active symbols. Check the instrument names shown in your Deriv platform.')
+                    chosen_symbol=st.session_state.get('chosen_deriv_symbol',matches[0]['symbol'])
+                    selected=next((s for s in matches if s['symbol']==chosen_symbol),matches[0])
+                    df=fetch_deriv_candles(selected['symbol'],candles_count,deriv)
                 result=ghost_protocol(df,lookback)
                 st.session_state['deriv_output']={'instrument':selected['display_name'],'symbol':selected['symbol'],'df':df,'result':result}
                 st.session_state['scan_market']='deriv'
@@ -293,42 +331,7 @@ if run_scan:
 
 # Signal pad at top, regardless of market.
 st.subheader('SIGNALS PAD')
-active_signal = st.session_state.get('active_signal')
-show_signal_pad(active_signal)
-
-# Play one short browser beep for each newly detected signal.
-# Browsers may require the user to enable sound once before autoplay is allowed.
-if sound_alerts and active_signal and active_signal.get('direction') in ('CALL', 'PUT'):
-    sound_key = '|'.join(str(active_signal.get(k, '')) for k in ('market', 'instrument', 'direction', 'candle_time'))
-    if st.session_state.get('last_sound_signal_key') != sound_key:
-        st.session_state['last_sound_signal_key'] = sound_key
-        audio_html = """
-        <html><body style="margin:0;background:transparent">
-        <script>
-        (() => {
-          try {
-            const Ctx = window.AudioContext || window.webkitAudioContext;
-            if (!Ctx) return;
-            const ctx = new Ctx();
-            const playTone = (freq, start, duration) => {
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.type = 'sine';
-              osc.frequency.value = freq;
-              gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
-              gain.gain.exponentialRampToValueAtTime(0.22, ctx.currentTime + start + 0.025);
-              gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + duration);
-              osc.connect(gain); gain.connect(ctx.destination);
-              osc.start(ctx.currentTime + start);
-              osc.stop(ctx.currentTime + start + duration + 0.02);
-            };
-            const run = () => { playTone(880, 0, 0.16); playTone(1175, 0.20, 0.22); };
-            if (ctx.state === 'suspended') ctx.resume().then(run); else run();
-          } catch (e) { /* Audio is optional; signal remains visible. */ }
-        })();
-        </script></body></html>
-        """
-        st.components.v1.html(audio_html, height=1, scrolling=False)
+show_signal_pad(st.session_state.get('active_signal'))
 
 if market.startswith('Pocket'):
     st.subheader('THREE STEPS · Forex scanner')
@@ -337,11 +340,10 @@ if market.startswith('Pocket'):
     for item in results:
         with st.container(border=True):
             if 'error' in item: st.error(f'{item["instrument"]}: {item["error"]}'); continue
-            res=item['result']; col1,col2,col3,col4=st.columns([2,1,1,4])
+            res=item['result']; col1,col2,col3=st.columns([2,1,3])
             col1.markdown(f'**{item["instrument"]}**')
             col2.metric('Signal',res['signal'])
-            col3.metric('Stage',res.get('stage','WAIT'))
-            col4.write(f"{res.get('bias','NONE')} · {res['reason']}")
+            col3.write(res['reason'])
             with st.expander('Chart & details'):
                 st.plotly_chart(chart(item['df'],item['instrument']),use_container_width=True)
                 if 'price' in res: st.write(f'Last completed close: {fmt_price(res["price"])} · EMA 9: {fmt_price(res["ema9"])} · EMA 21: {fmt_price(res["ema21"])}')
