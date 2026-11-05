@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -22,10 +21,7 @@ except ImportError:
 # ============================================================
 
 TZ = ZoneInfo("Africa/Lusaka")
-
-DERIV_PUBLIC_WS = (
-    "wss://api.derivws.com/trading/v1/options/ws/public"
-)
+DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 GHOST_SYMBOL = "1HZ100V"
 GHOST_NAME = "Volatility 100 (1s) Index"
@@ -88,15 +84,19 @@ def now_cat():
 
 def as_cat(value):
     ts = pd.Timestamp(value)
-
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
-
     return ts.tz_convert("Africa/Lusaka")
 
 
 def fmt_price(value):
-    return f"{value:.5f}" if abs(value) < 100 else f"{value:.3f}"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "Unavailable"
+    if not pd.notna(number):
+        return "Unavailable"
+    return f"{number:.5f}" if abs(number) < 100 else f"{number:.3f}"
 
 
 def blank_result(reason):
@@ -104,6 +104,15 @@ def blank_result(reason):
         "signal": "WAIT",
         "reason": reason
     }
+
+
+def get_secret_api_key():
+    """Read the optional Twelve Data key without crashing if Secrets is absent."""
+    try:
+        secret_value = st.secrets.get("TWELVE_DATA_API_KEY", "")
+    except Exception:
+        secret_value = ""
+    return secret_value or os.getenv("TWELVE_DATA_API_KEY", "")
 
 
 # ============================================================
@@ -123,7 +132,6 @@ def fetch_forex(symbol, key, count):
         },
         timeout=20
     )
-
     response.raise_for_status()
     payload = response.json()
 
@@ -133,26 +141,20 @@ def fetch_forex(symbol, key, count):
         )
 
     df = pd.DataFrame(payload["values"])
-
     for column in ["open", "high", "low", "close"]:
-        df[column] = pd.to_numeric(
-            df[column], errors="coerce"
-        )
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
     df["datetime"] = pd.to_datetime(
         df["datetime"], utc=True, errors="coerce"
     )
 
     df = (
-        df.dropna(
-            subset=["datetime", "open", "high", "low", "close"]
-        )
+        df.dropna(subset=["datetime", "open", "high", "low", "close"])
         .sort_values("datetime")
         .reset_index(drop=True)
     )
 
     cutoff = pd.Timestamp.now(tz="UTC").floor("min")
-
     return (
         df[df.datetime < cutoff]
         .tail(count)
@@ -162,17 +164,12 @@ def fetch_forex(symbol, key, count):
 
 def confirmed_pivots(df, strength):
     highs, lows = [], []
-
     high_values = df.high.to_numpy()
     low_values = df.low.to_numpy()
 
     for i in range(strength, len(df) - strength):
-        high_window = high_values[
-            i-strength:i+strength+1
-        ]
-        low_window = low_values[
-            i-strength:i+strength+1
-        ]
+        high_window = high_values[i-strength:i+strength+1]
+        low_window = low_values[i-strength:i+strength+1]
 
         if (
             high_values[i] == high_window.max()
@@ -189,96 +186,49 @@ def confirmed_pivots(df, strength):
     return highs, lows
 
 
-def three_steps(
-    df,
-    strength=2,
-    min_steps=3,
-    pullback_pct=50
-):
+def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
     if len(df) < 50:
-        return blank_result(
-            "Waiting for enough completed candles."
-        )
+        return blank_result("Waiting for enough completed candles.")
 
     highs, lows = confirmed_pivots(df, strength)
-
     hs = highs[-min_steps:]
     ls = lows[-min_steps:]
 
     if len(hs) < min_steps or len(ls) < min_steps:
-        return blank_result(
-            "Waiting for confirmed swing structure."
-        )
+        return blank_result("Waiting for confirmed swing structure.")
 
     bullish = (
-        all(
-            hs[i][1] > hs[i-1][1]
-            for i in range(1, len(hs))
-        )
-        and
-        all(
-            ls[i][1] > ls[i-1][1]
-            for i in range(1, len(ls))
-        )
+        all(hs[i][1] > hs[i-1][1] for i in range(1, len(hs)))
+        and all(ls[i][1] > ls[i-1][1] for i in range(1, len(ls)))
     )
-
     bearish = (
-        all(
-            hs[i][1] < hs[i-1][1]
-            for i in range(1, len(hs))
-        )
-        and
-        all(
-            ls[i][1] < ls[i-1][1]
-            for i in range(1, len(ls))
-        )
+        all(hs[i][1] < hs[i-1][1] for i in range(1, len(hs)))
+        and all(ls[i][1] < ls[i-1][1] for i in range(1, len(ls)))
     )
 
     close = df.close
-
-    ema9 = close.ewm(
-        span=9, adjust=False
-    ).mean()
-
-    ema21 = close.ewm(
-        span=21, adjust=False
-    ).mean()
-
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
     middle = close.rolling(20).mean()
     deviation = close.rolling(20).std()
 
     last = df.iloc[-1]
     previous = df.iloc[-2]
-
-    median_range = float(
-        (df.high - df.low).tail(20).median()
-    )
-
-    extension = abs(
-        float(last.close - ema9.iloc[-1])
-    )
+    median_range = float((df.high - df.low).tail(20).median())
+    extension = abs(float(last.close - ema9.iloc[-1]))
 
     tail = df.tail(12)
-
-    move = float(
-        tail.high.max() - tail.low.min()
-    )
-
+    move = float(tail.high.max() - tail.low.min())
     recent_pullback = (
         float(tail.high.max() - tail.close.iloc[-1])
         if bullish
         else float(tail.close.iloc[-1] - tail.low.min())
     )
-
     pullback_ok = (
         move <= 0
         or recent_pullback <= move * (pullback_pct / 100)
     )
-
-    late = (
-        median_range > 0
-        and extension > 2.5 * median_range
-    )
+    late = median_range > 0 and extension > 2.5 * median_range
 
     call = (
         bullish
@@ -288,7 +238,6 @@ def three_steps(
         and pullback_ok
         and not late
     )
-
     put = (
         bearish
         and ema9.iloc[-1] < ema21.iloc[-1]
@@ -298,19 +247,12 @@ def three_steps(
         and not late
     )
 
-    signal = (
-        "CALL" if call
-        else "PUT" if put
-        else "WAIT"
-    )
-
+    signal = "CALL" if call else "PUT" if put else "WAIT"
     reason = (
         "Confirmed higher highs and higher lows with upward resumption."
-        if call
-        else
+        if call else
         "Confirmed lower highs and lower lows with downward resumption."
-        if put
-        else
+        if put else
         "No fresh confirmed staircase entry. Wait; do not chase."
     )
 
@@ -333,36 +275,28 @@ def three_steps(
 # ============================================================
 
 class DerivClient:
-
     def __init__(self, timeout=20):
         if websocket is None:
             raise RuntimeError(
                 "Install websocket-client before connecting to Deriv."
             )
-
         self.timeout = timeout
         self.ws = None
         self.req_id = 0
         self.last_activity = time.monotonic()
-
         self.connect()
 
     def connect(self):
         self.close()
-
         try:
             self.ws = websocket.create_connection(
                 DERIV_PUBLIC_WS,
                 timeout=self.timeout
             )
-
             self.ws.settimeout(self.timeout)
             self.last_activity = time.monotonic()
-
         except Exception as exc:
-            raise RuntimeError(
-                f"Could not connect to Deriv: {exc}"
-            )
+            raise RuntimeError(f"Could not connect to Deriv: {exc}")
 
     def close(self):
         if self.ws is not None:
@@ -370,7 +304,6 @@ class DerivClient:
                 self.ws.close()
             except Exception:
                 pass
-
         self.ws = None
 
     def request(self, payload):
@@ -378,17 +311,13 @@ class DerivClient:
             self.connect()
 
         self.req_id += 1
-
         request = dict(payload)
         request["req_id"] = self.req_id
-
         self.ws.send(json.dumps(request))
 
         deadline = time.monotonic() + self.timeout
-
         while time.monotonic() < deadline:
             raw = self.ws.recv()
-
             if not raw:
                 continue
 
@@ -420,30 +349,23 @@ class DerivClient:
 # ============================================================
 
 def deriv_symbols(client):
-    data = client.request({
-        "active_symbols": "brief"
-    })
-
+    data = client.request({"active_symbols": "brief"})
     raw_symbols = data.get("active_symbols", [])
-
     normalized = []
 
     for item in raw_symbols:
         row = dict(item)
-
         symbol = (
             row.get("underlying_symbol")
             or row.get("symbol")
             or ""
         )
-
         name = (
             row.get("underlying_symbol_name")
             or row.get("display_name")
             or row.get("name")
             or symbol
         )
-
         if symbol:
             row["symbol"] = symbol
             row["display_name"] = name
@@ -452,16 +374,10 @@ def deriv_symbols(client):
     return normalized
 
 
-def fetch_deriv_ticks(
-    symbol,
-    count=4500,
-    client=None
-):
+def fetch_deriv_ticks(symbol, count=4500, client=None):
     if client is None:
         with DerivClient(timeout=25) as temporary:
-            return fetch_deriv_ticks(
-                symbol, count, temporary
-            )
+            return fetch_deriv_ticks(symbol, count, temporary)
 
     data = client.request({
         "ticks_history": symbol,
@@ -472,32 +388,22 @@ def fetch_deriv_ticks(
     })
 
     history = data.get("history", {})
-
     prices = history.get("prices", [])
     times = history.get("times", [])
 
-    if (
-        not prices
-        or not times
-        or len(prices) != len(times)
-    ):
-        raise RuntimeError(
-            "Deriv returned insufficient tick history."
-        )
+    if not prices or not times or len(prices) != len(times):
+        raise RuntimeError("Deriv returned insufficient tick history.")
 
     df = pd.DataFrame({
-        "datetime": pd.to_datetime(
-            times, unit="s", utc=True
-        ),
-        "close": pd.to_numeric(
-            prices, errors="coerce"
-        )
+        "datetime": pd.to_datetime(times, unit="s", utc=True),
+        "close": pd.to_numeric(prices, errors="coerce")
     })
 
+    # Keep multiple ticks sharing the same second: they may contain
+    # important intrasecond price movement for OHLC construction.
     df = (
-        df.dropna()
-        .sort_values("datetime")
-        .drop_duplicates("datetime", keep="last")
+        df.dropna(subset=["datetime", "close"])
+        .sort_values("datetime", kind="stable")
         .reset_index(drop=True)
     )
 
@@ -516,20 +422,14 @@ def fetch_deriv_ticks(
 def ticks_to_candles(ticks):
     series = (
         ticks.set_index("datetime")["close"]
-        .sort_index()
+        .sort_index(kind="stable")
     )
-
     candles = series.resample("1min").ohlc()
-
-    return (
-        candles.dropna()
-        .reset_index()
-    )
+    return candles.dropna().reset_index()
 
 
 def aggregate_timeframe(one_minute, minutes):
     data = one_minute.set_index("datetime")
-
     result = data.resample(
         f"{minutes}min",
         label="left",
@@ -542,14 +442,9 @@ def aggregate_timeframe(one_minute, minutes):
     }).dropna().reset_index()
 
     now = pd.Timestamp.now(tz="UTC").floor("min")
-
-    # Only use fully completed higher-timeframe candles.
     result = result[
-        result.datetime
-        + pd.Timedelta(minutes=minutes)
-        <= now
+        result.datetime + pd.Timedelta(minutes=minutes) <= now
     ]
-
     return result.reset_index(drop=True)
 
 
@@ -558,16 +453,21 @@ def aggregate_timeframe(one_minute, minutes):
 # ============================================================
 
 def ghost_protocol(ticks):
+    latest_price = (
+        float(ticks.close.iloc[-1])
+        if ticks is not None and not ticks.empty
+        else None
+    )
 
     wait = {
         "signal": "WAIT",
         "reason": "Waiting for aligned market conditions.",
         "stage": "ANALYSING",
-        "stage_detail": ""
+        "stage_detail": "",
+        "price": latest_price
     }
 
     one_minute = ticks_to_candles(ticks)
-
     if len(one_minute) < 20:
         return {
             **wait,
@@ -576,13 +476,9 @@ def ghost_protocol(ticks):
 
     now = pd.Timestamp.now(tz="UTC")
     current_minute = now.floor("min")
-
-    # Developing one-minute candle.
     current = one_minute[
         one_minute.datetime == current_minute
     ]
-
-    # Completed one-minute candles only for higher timeframes.
     completed_1m = one_minute[
         one_minute.datetime < current_minute
     ].copy()
@@ -603,80 +499,55 @@ def ghost_protocol(ticks):
         }
 
     live = current.iloc[-1]
-
-    price = float(ticks.close.iloc[-1])
+    price = latest_price
     latest_tick = ticks.datetime.iloc[-1]
 
-    tick_age = (
-        now - latest_tick
-    ).total_seconds()
-
-    # Reject stale prices.
+    tick_age = (now - latest_tick).total_seconds()
     if tick_age > 5 or tick_age < -2:
         return {
             **wait,
             "reason": (
-                f"Deriv feed is stale or time-misaligned "
-                f"({tick_age:.1f}s)."
+                f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."
             ),
             "tick_age": tick_age
         }
 
-    # Do not signal immediately at the start of a new candle.
-    candle_age = (
-        now - current_minute
-    ).total_seconds()
-
+    candle_age = (now - current_minute).total_seconds()
     if candle_age < 10:
         return {
             **wait,
             "reason": "Waiting for the first 10 seconds of the 1m candle.",
-            "tick_age": tick_age
+            "tick_age": tick_age,
+            "candle_age": candle_age
         }
 
     if candle_age > 55:
         return {
             **wait,
             "reason": "Too late in the current 1m candle for a fresh signal.",
-            "tick_age": tick_age
+            "tick_age": tick_age,
+            "candle_age": candle_age
         }
 
-    # --------------------------------------------------------
-    # 15-MINUTE MAJOR DIRECTION
-    # --------------------------------------------------------
-
+    # 15-minute major direction
     fifteen["ema3"] = fifteen.close.ewm(
         span=3, adjust=False
     ).mean()
-
     fifteen["ema5"] = fifteen.close.ewm(
         span=5, adjust=False
     ).mean()
-
     f15 = fifteen.iloc[-1]
 
-    bullish_15 = (
-        f15.ema3 > f15.ema5
-        and f15.close > f15.open
-    )
+    bullish_15 = f15.ema3 > f15.ema5 and f15.close > f15.open
+    bearish_15 = f15.ema3 < f15.ema5 and f15.close < f15.open
 
-    bearish_15 = (
-        f15.ema3 < f15.ema5
-        and f15.close < f15.open
-    )
-
-    # --------------------------------------------------------
-    # 5-MINUTE MOMENTUM CONFIRMATION
-    # --------------------------------------------------------
-
+    # 5-minute momentum confirmation
     five["ema3"] = five.close.ewm(
         span=3, adjust=False
     ).mean()
-
     five["ema5"] = five.close.ewm(
         span=5, adjust=False
     ).mean()
-
     f5 = five.iloc[-1]
     previous_5 = five.iloc[-2]
 
@@ -685,54 +556,25 @@ def ghost_protocol(ticks):
         and f5.close > f5.open
         and f5.close > previous_5.close
     )
-
     bearish_5 = (
         f5.ema3 < f5.ema5
         and f5.close < f5.open
         and f5.close < previous_5.close
     )
 
-    # --------------------------------------------------------
-    # DEVELOPING 1-MINUTE ENTRY
-    # --------------------------------------------------------
-
+    # Developing 1-minute entry
     candle_open = float(live.open)
     candle_high = float(live.high)
     candle_low = float(live.low)
-
-    candle_range = max(
-        candle_high - candle_low,
-        1e-12
-    )
-
+    candle_range = max(candle_high - candle_low, 1e-12)
     body = abs(price - candle_open)
     body_strength = body / candle_range
 
-    bullish_1 = (
-        price > candle_open
-        and body_strength >= 0.35
-    )
+    bullish_1 = price > candle_open and body_strength >= 0.35
+    bearish_1 = price < candle_open and body_strength >= 0.35
 
-    bearish_1 = (
-        price < candle_open
-        and body_strength >= 0.35
-    )
-
-    # --------------------------------------------------------
-    # FINAL ALIGNMENT
-    # --------------------------------------------------------
-
-    call = (
-        bullish_15
-        and bullish_5
-        and bullish_1
-    )
-
-    put = (
-        bearish_15
-        and bearish_5
-        and bearish_1
-    )
+    call = bullish_15 and bullish_5 and bullish_1
+    put = bearish_15 and bearish_5 and bearish_1
 
     if call:
         signal = "CALL"
@@ -740,14 +582,12 @@ def ghost_protocol(ticks):
             "15m bullish direction, 5m bullish momentum "
             "and developing 1m bullish entry."
         )
-
     elif put:
         signal = "PUT"
         reason = (
             "15m bearish direction, 5m bearish momentum "
             "and developing 1m bearish entry."
         )
-
     else:
         signal = "WAIT"
         reason = (
@@ -759,8 +599,7 @@ def ghost_protocol(ticks):
         "signal": signal,
         "reason": reason,
         "stage": (
-            "SIGNAL READY"
-            if signal != "WAIT"
+            "SIGNAL READY" if signal != "WAIT"
             else "WAITING FOR ALIGNMENT"
         ),
         "stage_detail": reason,
@@ -792,14 +631,8 @@ def ghost_protocol(ticks):
 # SIGNAL TIMER AND RECORD
 # ============================================================
 
-def build_signal_record(
-    market,
-    instrument,
-    result,
-    expiry=1
-):
+def build_signal_record(market, instrument, result, expiry=1):
     created = now_cat()
-
     entry = created
     expiration = entry + timedelta(minutes=expiry)
 
@@ -809,9 +642,7 @@ def build_signal_record(
         "direction": result["signal"],
         "reason": result["reason"],
         "signal_created": created.isoformat(),
-        "candle_time": as_cat(
-            result["candle_time"]
-        ).isoformat(),
+        "candle_time": as_cat(result["candle_time"]).isoformat(),
         "reference_price": result["price"],
         "entry_time": entry.isoformat(),
         "expiry_time": expiration.isoformat(),
@@ -821,7 +652,6 @@ def build_signal_record(
 
 
 def show_signal_pad(signal):
-
     if not signal:
         st.markdown(
             """
@@ -837,34 +667,21 @@ def show_signal_pad(signal):
         return
 
     now = now_cat()
-
-    entry = datetime.fromisoformat(
-        signal["entry_time"]
-    )
-
-    expiry = datetime.fromisoformat(
-        signal["expiry_time"]
-    )
+    entry = datetime.fromisoformat(signal["entry_time"])
+    expiry = datetime.fromisoformat(signal["expiry_time"])
 
     if now < entry:
         status = "PREPARE"
-        remaining = int(
-            (entry - now).total_seconds()
-        )
-
+        remaining = int((entry - now).total_seconds())
     elif now < expiry:
         status = "ENTRY WINDOW"
-        remaining = int(
-            (expiry - now).total_seconds()
-        )
-
+        remaining = int((expiry - now).total_seconds())
     else:
         status = "EXPIRED"
         remaining = 0
 
     color = (
-        "signal-call"
-        if signal["direction"] == "CALL"
+        "signal-call" if signal["direction"] == "CALL"
         else "signal-put"
     )
 
@@ -886,43 +703,27 @@ def show_signal_pad(signal):
     )
 
     a, b, c, d = st.columns(4)
-
-    a.metric(
-        "Reference price",
-        fmt_price(signal["reference_price"])
-    )
-
+    a.metric("Reference price", fmt_price(signal["reference_price"]))
     b.metric(
         "Time remaining",
         f"{remaining // 60:02d}:{remaining % 60:02d}"
     )
-
-    c.metric(
-        "Entry time (CAT)",
-        entry.strftime("%H:%M:%S")
-    )
-
-    d.metric(
-        "Expiry time (CAT)",
-        expiry.strftime("%H:%M:%S")
-    )
+    c.metric("Entry time (CAT)", entry.strftime("%H:%M:%S"))
+    d.metric("Expiry time (CAT)", expiry.strftime("%H:%M:%S"))
 
     st.caption(
         "Signal candle: "
-        + datetime.fromisoformat(
-            signal["candle_time"]
-        ).strftime("%Y-%m-%d %H:%M:%S CAT")
+        + datetime.fromisoformat(signal["candle_time"]).strftime(
+            "%Y-%m-%d %H:%M:%S CAT"
+        )
         + " · Created: "
-        + datetime.fromisoformat(
-            signal["signal_created"]
-        ).strftime("%H:%M:%S CAT")
+        + datetime.fromisoformat(signal["signal_created"]).strftime(
+            "%H:%M:%S CAT"
+        )
     )
 
     if status == "EXPIRED":
-        st.warning(
-            "Signal expired. Do not reuse this signal."
-        )
-
+        st.warning("Signal expired. Do not reuse this signal.")
     elif status == "ENTRY WINDOW":
         st.info(
             "Signal window active. Confirm the live Deriv quote "
@@ -936,7 +737,6 @@ def show_signal_pad(signal):
 
 def chart(df, title):
     view = df.tail(100)
-
     fig = go.Figure(
         go.Candlestick(
             x=view.datetime,
@@ -947,14 +747,12 @@ def chart(df, title):
             name="1m"
         )
     )
-
     fig.update_layout(
         title=title,
         height=380,
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=40, b=10)
     )
-
     return fig
 
 
@@ -963,7 +761,6 @@ def chart(df, title):
 # ============================================================
 
 with st.sidebar:
-
     st.header("Market & controls")
 
     market = st.radio(
@@ -990,7 +787,6 @@ with st.sidebar:
         "Refresh dashboard automatically",
         value=True
     )
-
     auto_scan = st.checkbox(
         "Automatically scan",
         value=True
@@ -1000,59 +796,38 @@ with st.sidebar:
         "GHOST checks the Deriv feed every 15 seconds when automatic "
         "scanning is enabled. Forex scans once per minute."
     )
-
     st.divider()
 
     if market.startswith("Pocket"):
-
         api_key = st.text_input(
             "Twelve Data API key",
-            value=st.secrets.get(
-                "TWELVE_DATA_API_KEY",
-                os.getenv("TWELVE_DATA_API_KEY", "")
-            ),
+            value=get_secret_api_key(),
             type="password"
         )
-
         pairs = st.multiselect(
             "Forex pairs",
             FOREX_PAIRS,
             default=FOREX_PAIRS
         )
-
-        pivot_strength = st.slider(
-            "Swing confirmation",
-            2, 4, 2
-        )
-
-        min_steps = st.slider(
-            "Minimum staircase steps",
-            3, 5, 3
-        )
-
+        pivot_strength = st.slider("Swing confirmation", 2, 4, 2)
+        min_steps = st.slider("Minimum staircase steps", 3, 5, 3)
         pullback_pct = st.slider(
-            "Maximum pullback (%)",
-            20, 70, 50, 5
+            "Maximum pullback (%)", 20, 70, 50, 5
         )
-
         scan = st.button(
             "SCAN FOREX",
             type="primary",
             use_container_width=True
         )
-
     else:
-
         st.markdown("**GHOST market**")
         st.write(GHOST_NAME)
         st.caption(f"Deriv symbol target: {GHOST_SYMBOL}")
-
         scan = st.button(
             "CONNECT & SCAN GHOST",
             type="primary",
             use_container_width=True
         )
-
         st.caption(
             "Public Deriv market data only. No account login, "
             "password, App ID or trade execution is used."
@@ -1064,101 +839,64 @@ with st.sidebar:
 # ============================================================
 
 if auto_refresh:
-    st_autorefresh(
-        interval=5000,
-        key="desk_clock"
-    )
+    st_autorefresh(interval=5000, key="desk_clock")
 
 now = now_cat()
-
 st.caption(
     f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
 )
 
-if market.startswith("Deriv"):
-    scan_interval = 15
-else:
-    scan_interval = 60
-
+scan_interval = 15 if market.startswith("Deriv") else 60
 scan_slot = int(time.time() // scan_interval)
+last_slot = st.session_state.get("last_auto_scan_slot")
 
-last_slot = st.session_state.get(
-    "last_auto_scan_slot"
-)
-
-auto_scan_due = (
-    auto_scan
-    and scan_slot != last_slot
-)
-
+auto_scan_due = auto_scan and scan_slot != last_slot
 run_scan = bool(scan or auto_scan_due)
 
 if run_scan:
-
     if auto_scan_due:
         st.session_state["last_auto_scan_slot"] = scan_slot
 
     if market.startswith("Pocket"):
-
         if not api_key:
             st.error(
                 "Add your Twelve Data key in the sidebar "
                 "or Streamlit Secrets."
             )
-
         elif not pairs:
-            st.warning(
-                "Select at least one Forex pair."
-            )
-
+            st.warning("Select at least one Forex pair.")
         else:
             output = []
             progress = st.progress(0)
             note = st.empty()
 
             for i, pair in enumerate(pairs):
-
                 note.write(f"Scanning {pair}...")
-
                 try:
-                    df = fetch_forex(
-                        pair,
-                        api_key,
-                        candles_count
-                    )
-
+                    df = fetch_forex(pair, api_key, candles_count)
                     result = three_steps(
-                        df,
-                        pivot_strength,
-                        min_steps,
-                        pullback_pct
+                        df, pivot_strength, min_steps, pullback_pct
                     )
-
                     output.append({
                         "instrument": pair,
                         "df": df,
                         "result": result
                     })
-
                 except Exception as exc:
                     output.append({
                         "instrument": pair,
                         "error": str(exc)
                     })
 
-                progress.progress(
-                    (i + 1) / len(pairs)
-                )
+                progress.progress((i + 1) / len(pairs))
 
             note.empty()
-
             st.session_state["scan_output"] = output
             st.session_state["scan_market"] = "forex"
 
             candidates = [
                 item for item in output
-                if item.get("result", {}).get("signal")
-                in ("CALL", "PUT")
+                if item.get("result", {}).get("signal") in ("CALL", "PUT")
             ]
 
             if candidates:
@@ -1166,31 +904,22 @@ if run_scan:
                     candidates,
                     key=lambda item: item["result"]["candle_time"]
                 )
-
-                st.session_state["active_signal"] = (
-                    build_signal_record(
-                        "THREE STEPS",
-                        chosen["instrument"],
-                        chosen["result"],
-                        expiry
-                    )
+                st.session_state["active_signal"] = build_signal_record(
+                    "THREE STEPS",
+                    chosen["instrument"],
+                    chosen["result"],
+                    expiry
                 )
             else:
-                st.session_state.pop(
-                    "active_signal", None
-                )
+                st.session_state.pop("active_signal", None)
 
     else:
-
         try:
             with st.spinner(
                 "Connecting to Deriv and analysing Volatility 100 (1s)..."
             ):
-
                 with DerivClient(timeout=25) as deriv:
-
                     symbols = deriv_symbols(deriv)
-
                     selected = next(
                         (
                             item for item in symbols
@@ -1202,14 +931,12 @@ if run_scan:
                     if selected is None:
                         raise RuntimeError(
                             f"{GHOST_SYMBOL} was not found in Deriv's "
-                            "active-symbol list. Check the returned "
-                            "symbols and market availability."
+                            "active-symbol list. Check returned symbols "
+                            "and market availability."
                         )
 
                     ticks = fetch_deriv_ticks(
-                        selected["symbol"],
-                        4500,
-                        deriv
+                        selected["symbol"], 4500, deriv
                     )
 
                 result = ghost_protocol(ticks)
@@ -1219,17 +946,13 @@ if run_scan:
                 "symbol": GHOST_SYMBOL,
                 "ticks": ticks,
                 "candles": ticks_to_candles(ticks),
-                "result": result
+                "result": result,
+                "last_scan": now_cat().isoformat()
             }
-
             st.session_state["scan_market"] = "deriv"
 
             if result.get("signal") in ("CALL", "PUT"):
-
-                existing = st.session_state.get(
-                    "active_signal"
-                )
-
+                existing = st.session_state.get("active_signal")
                 same_signal = (
                     existing
                     and existing.get("direction") == result["signal"]
@@ -1238,30 +961,20 @@ if run_scan:
                     and existing.get("instrument") == GHOST_NAME
                 )
 
-                # Do not restart the timer for the same candle signal.
                 if not same_signal:
-                    st.session_state["active_signal"] = (
-                        build_signal_record(
-                            "GHOST PROTOCOL",
-                            GHOST_NAME,
-                            result,
-                            1
-                        )
+                    st.session_state["active_signal"] = build_signal_record(
+                        "GHOST PROTOCOL",
+                        GHOST_NAME,
+                        result,
+                        1
                     )
-
             else:
-                # No current alignment means no current GHOST signal.
                 active = st.session_state.get("active_signal")
-
-                if (
-                    active
-                    and active.get("instrument") == GHOST_NAME
-                ):
-                    st.session_state.pop(
-                        "active_signal", None
-                    )
+                if active and active.get("instrument") == GHOST_NAME:
+                    st.session_state.pop("active_signal", None)
 
         except Exception as exc:
+            st.session_state["deriv_scan_error"] = str(exc)
             st.error(f"GHOST scan failed: {exc}")
 
 
@@ -1270,11 +983,7 @@ if run_scan:
 # ============================================================
 
 st.subheader("SIGNALS PAD")
-
-active_signal = st.session_state.get(
-    "active_signal"
-)
-
+active_signal = st.session_state.get("active_signal")
 show_signal_pad(active_signal)
 
 
@@ -1283,7 +992,6 @@ show_signal_pad(active_signal)
 # ============================================================
 
 if market.startswith("Pocket"):
-
     st.subheader("THREE STEPS · Forex scanner")
 
     results = (
@@ -1299,43 +1007,25 @@ if market.startswith("Pocket"):
         )
 
     for item in results:
-
         with st.container(border=True):
-
             if "error" in item:
-                st.error(
-                    f'{item["instrument"]}: {item["error"]}'
-                )
+                st.error(f'{item["instrument"]}: {item["error"]}')
                 continue
 
             result = item["result"]
-
             col1, col2, col3 = st.columns([2, 1, 3])
-
-            col1.markdown(
-                f'**{item["instrument"]}**'
-            )
-
-            col2.metric(
-                "Signal",
-                result["signal"]
-            )
-
-            col3.write(
-                result["reason"]
-            )
+            col1.markdown(f'**{item["instrument"]}**')
+            col2.metric("Signal", result["signal"])
+            col3.write(result["reason"])
 
             with st.expander("Chart & details"):
-
                 st.plotly_chart(
                     chart(item["df"], item["instrument"]),
                     use_container_width=True
                 )
-
                 if "price" in result:
                     st.write(
-                        f'Last completed close: '
-                        f'{fmt_price(result["price"])} · '
+                        f'Last completed close: {fmt_price(result["price"])} · '
                         f'EMA 9: {fmt_price(result["ema9"])} · '
                         f'EMA 21: {fmt_price(result["ema21"])}'
                     )
@@ -1346,10 +1036,7 @@ if market.startswith("Pocket"):
 # ============================================================
 
 else:
-
-    st.subheader(
-        "GHOST PROTOCOL · Deriv Rise/Fall"
-    )
+    st.subheader("GHOST PROTOCOL · Deriv Rise/Fall")
 
     output = (
         st.session_state.get("deriv_output")
@@ -1358,69 +1045,47 @@ else:
     )
 
     if output:
-
         result = output["result"]
 
         col1, col2, col3 = st.columns([2, 1, 3])
-
-        col1.markdown(
-            f'**{output["instrument"]}**'
-        )
-
-        col2.metric(
-            "Signal",
-            result["signal"]
-        )
-
-        col3.write(
-            result["reason"]
-        )
+        col1.markdown(f'**{output["instrument"]}**')
+        col2.metric("Signal", result.get("signal", "WAIT"))
+        col3.write(result.get("reason", "Waiting for analysis."))
 
         st.markdown("### Multi-timeframe analysis")
-
         a, b, c = st.columns(3)
+        a.metric("15-minute direction", result.get("trend_15m", "—"))
+        b.metric("5-minute momentum", result.get("momentum_5m", "—"))
+        c.metric("1-minute entry", result.get("entry_1m", "—"))
 
-        a.metric(
-            "15-minute direction",
-            result.get("trend_15m", "—")
-        )
+        tick_age = result.get("tick_age")
+        candle_age = result.get("candle_age")
+        body_strength = result.get("body_strength")
 
-        b.metric(
-            "5-minute momentum",
-            result.get("momentum_5m", "—")
-        )
+        status_parts = []
+        if tick_age is not None:
+            status_parts.append(f"Tick age: {tick_age:.2f}s")
+        if candle_age is not None:
+            status_parts.append(f"1m candle age: {candle_age:.1f}s")
+        if body_strength is not None:
+            status_parts.append(f"1m body strength: {body_strength:.0%}")
+        if status_parts:
+            st.caption(" · ".join(status_parts))
 
-        c.metric(
-            "1-minute entry",
-            result.get("entry_1m", "—")
-        )
-
-        st.caption(
-            f'Tick age: {result.get("tick_age", 0):.2f}s · '
-            f'1m candle age: {result.get("candle_age", 0):.1f}s · '
-            f'1m body strength: '
-            f'{result.get("body_strength", 0):.0%}'
-        )
-
-        if result["signal"] == "CALL":
+        if result.get("signal") == "CALL":
             st.success(
                 "RISE conditions aligned. This is a demo research signal, "
                 "not a guaranteed winning trade."
             )
-
-        elif result["signal"] == "PUT":
+        elif result.get("signal") == "PUT":
             st.error(
                 "FALL conditions aligned. This is a demo research signal, "
                 "not a guaranteed winning trade."
             )
-
         else:
-            st.info(
-                "NO SIGNAL. Wait for all three timeframes to align."
-            )
+            st.info("NO SIGNAL. Wait for all three timeframes to align.")
 
         with st.expander("GHOST live chart and details", expanded=True):
-
             st.plotly_chart(
                 chart(
                     output["candles"],
@@ -1429,28 +1094,41 @@ else:
                 use_container_width=True
             )
 
-            st.write(
-                f'Latest price: {fmt_price(result["price"])}'
-            )
+            latest_price = result.get("price")
+            if latest_price is not None:
+                st.write(f"Latest price: {fmt_price(latest_price)}")
+            else:
+                st.write(
+                    "Latest price: Unavailable — waiting for valid market data."
+                )
 
             st.write(
                 f'15m direction: {result.get("trend_15m", "—")}'
             )
-
             st.write(
                 f'5m momentum: {result.get("momentum_5m", "—")}'
             )
-
             st.write(
                 f'1m entry: {result.get("entry_1m", "—")}'
             )
 
-    else:
+        last_scan = output.get("last_scan")
+        if last_scan:
+            st.caption(
+                "Last successful Deriv scan (CAT): "
+                + datetime.fromisoformat(last_scan).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            )
 
+    else:
         st.info(
             "Press CONNECT & SCAN GHOST to connect to Deriv "
             "and retrieve the first set of market data."
         )
+        last_error = st.session_state.get("deriv_scan_error")
+        if last_error:
+            st.warning(f"Most recent scan error: {last_error}")
 
 
 # ============================================================
@@ -1458,7 +1136,6 @@ else:
 # ============================================================
 
 st.divider()
-
 st.caption(
     "Research and demo alerting only — not financial advice. "
     "GHOST does not place trades. Deriv data and execution quotes "
