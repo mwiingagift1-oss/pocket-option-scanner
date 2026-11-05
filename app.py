@@ -209,24 +209,113 @@ def fetch_deriv_candles(symbol, count, client=None):
     return df.tail(count).reset_index(drop=True)
 
 def ghost_protocol(df, lookback=24, retest_bars=5):
-    if len(df)<lookback+8: return blank_result('Waiting for enough completed Deriv candles.')
-    # Prior range excludes the most recent 2 candles; breakout must then retest and resume.
-    prior=df.iloc[-(lookback+7):-7]
-    recent=df.tail(7); trigger=recent.iloc[-1]; prior_range_high=float(prior.high.max()); prior_range_low=float(prior.low.min())
-    width=max(prior_range_high-prior_range_low,1e-12)
-    atr=float((df.high-df.low).tail(14).mean())
-    if width < atr*2.0: return blank_result('Range is too compressed; waiting for a cleaner structure.')
-    # Find breakout among the last retest window, then require price to revisit boundary and close away.
-    breakout_up=any(float(x.close)>prior_range_high for _,x in recent.iloc[:-1].iterrows())
-    breakout_down=any(float(x.close)<prior_range_low for _,x in recent.iloc[:-1].iterrows())
-    call=breakout_up and trigger.low<=prior_range_high+atr*0.25 and trigger.close>prior_range_high and trigger.close>trigger.open
-    put=breakout_down and trigger.high>=prior_range_low-atr*0.25 and trigger.close<prior_range_low and trigger.close<trigger.open
-    sig='CALL' if call else 'PUT' if put else 'WAIT'
-    why=('Range breakout retested and closed back above resistance.' if call else
-         'Range breakdown retested and closed back below support.' if put else
-         'No confirmed breakout-and-retest. Wait for the range to resolve.')
-    return {'signal':sig,'reason':why,'price':float(trigger.close),'candle_time':trigger.datetime,
-            'range_high':prior_range_high,'range_low':prior_range_low,'atr':atr}
+    """Track the latest range breakout through retest and candle confirmation."""
+    if len(df) < lookback + max(3, int(retest_bars) + 1):
+        return {**blank_result('Waiting for enough completed Deriv candles.'),
+                'stage': 'WAITING FOR DATA', 'stage_detail': 'Collecting completed one-minute candles.'}
+
+    # Keep a fixed consolidation range, then inspect the most recent breakout/retest window.
+    window_size = max(3, int(retest_bars) + 1)
+    prior = df.iloc[-(lookback + window_size):-window_size].copy()
+    recent = df.tail(window_size).copy().reset_index(drop=True)
+    trigger = recent.iloc[-1]
+    range_high = float(prior.high.max())
+    range_low = float(prior.low.min())
+    atr = float((df.high - df.low).tail(14).mean())
+    width = max(range_high - range_low, 1e-12)
+
+    base = {'price': float(trigger.close), 'candle_time': trigger.datetime,
+            'range_high': range_high, 'range_low': range_low, 'atr': atr}
+    if width < atr * 2.0:
+        return {**blank_result('Range is too compressed; waiting for a cleaner structure.'),
+                **base, 'stage': 'WAITING FOR RANGE',
+                'stage_detail': 'The consolidation range is too narrow relative to recent volatility.'}
+
+    # Find the newest completed candle that closed outside the consolidation range.
+    events = []
+    previous_close = float(prior.iloc[-1].close)
+    for i, candle in recent.iterrows():
+        current_close = float(candle.close)
+        # Count the boundary crossing once, not every candle that remains outside.
+        if current_close > range_high and previous_close <= range_high:
+            events.append((i, 'CALL'))
+        elif current_close < range_low and previous_close >= range_low:
+            events.append((i, 'PUT'))
+        previous_close = current_close
+
+    if not events:
+        return {**blank_result('No range breakout detected yet.'), **base,
+                'stage': 'WAITING FOR BREAKOUT',
+                'stage_detail': 'Price is still inside the reference consolidation range.'}
+
+    breakout_i, direction = events[-1]
+    level = range_high if direction == 'CALL' else range_low
+    tolerance = max(atr * 0.25, 1e-12)
+    after = recent.iloc[breakout_i + 1:]
+
+    if after.empty:
+        label = 'BULLISH BREAKOUT DETECTED' if direction == 'CALL' else 'BEARISH BREAKOUT DETECTED'
+        return {**blank_result('Breakout detected. Waiting for price to retest the broken range boundary.'),
+                **base, 'stage': label, 'stage_detail': f'Breakout close: {fmt_price(float(recent.iloc[breakout_i].close))} · Retest level: {fmt_price(level)}'}
+
+    # A valid retest must revisit the boundary and close back on the breakout side.
+    retest_i = None
+    for j, candle in after.iterrows():
+        if direction == 'CALL':
+            touched = float(candle.low) <= level + tolerance
+            held = float(candle.close) >= level
+        else:
+            touched = float(candle.high) >= level - tolerance
+            held = float(candle.close) <= level
+        if touched and held:
+            retest_i = j
+            break
+
+    # If price closes decisively back inside the old range before a valid retest, invalidate it.
+    if retest_i is None:
+        last_close = float(trigger.close)
+        failed = (direction == 'CALL' and last_close < level - tolerance) or (direction == 'PUT' and last_close > level + tolerance)
+        if failed:
+            return {**blank_result('The breakout fell back inside the old range. Waiting for a fresh breakout.'),
+                    **base, 'stage': 'BREAKOUT FAILED',
+                    'stage_detail': f'Price moved back through the {"resistance" if direction == "CALL" else "support"} level.'}
+        label = 'WAITING FOR BULLISH RETEST' if direction == 'CALL' else 'WAITING FOR BEARISH RETEST'
+        return {**blank_result('Breakout detected; price has not completed a valid retest yet.'),
+                **base, 'stage': label, 'stage_detail': f'Watch for a return to {fmt_price(level)} and a close back beyond that level.'}
+
+    retest_candle = recent.iloc[retest_i]
+    # Require a later completed candle to confirm continuation beyond the retest candle.
+    if retest_i >= len(recent) - 1:
+        label = 'RETEST COMPLETE · WAITING FOR BULLISH CONFIRMATION' if direction == 'CALL' else 'RETEST COMPLETE · WAITING FOR BEARISH CONFIRMATION'
+        return {**blank_result('Retest held. Waiting for a separate confirmation candle.'),
+                **base, 'stage': label, 'stage_detail': f'Retest held near {fmt_price(level)}.'}
+
+    bullish_confirm = (direction == 'CALL' and float(trigger.close) > float(trigger.open)
+                       and float(trigger.close) > float(recent.iloc[-2].high)
+                       and float(trigger.close) > level)
+    bearish_confirm = (direction == 'PUT' and float(trigger.close) < float(trigger.open)
+                       and float(trigger.close) < float(recent.iloc[-2].low)
+                       and float(trigger.close) < level)
+
+    if bullish_confirm or bearish_confirm:
+        sig = direction
+        reason = ('Bullish breakout retested the range high and a later candle confirmed upward continuation.'
+                  if sig == 'CALL' else
+                  'Bearish breakout retested the range low and a later candle confirmed downward continuation.')
+        stage = 'CALL CONFIRMED' if sig == 'CALL' else 'PUT CONFIRMED'
+        return {**base, 'signal': sig, 'reason': reason, 'stage': stage,
+                'stage_detail': f'Confirmation completed beyond {fmt_price(level)}.'}
+
+    # A later close back through the boundary invalidates the retest setup.
+    invalid = (direction == 'CALL' and float(trigger.close) < level) or (direction == 'PUT' and float(trigger.close) > level)
+    if invalid:
+        return {**blank_result('Price lost the retest level before confirmation. Wait for a fresh setup.'),
+                **base, 'stage': 'RETEST FAILED',
+                'stage_detail': f'The {"resistance" if direction == "CALL" else "support"} level did not hold.'}
+
+    label = 'RETEST COMPLETE · WAITING FOR BULLISH CONFIRMATION' if direction == 'CALL' else 'RETEST COMPLETE · WAITING FOR BEARISH CONFIRMATION'
+    return {**blank_result('Retest held, but no separate confirmation candle has closed yet.'),
+            **base, 'stage': label, 'stage_detail': f'Retest held near {fmt_price(level)}; waiting for continuation.'}
 
 def build_signal_record(market,instrument,result,expiry):
     now=now_cat(); entry=now.replace(second=0,microsecond=0)+timedelta(minutes=1)
@@ -372,9 +461,16 @@ else:
         out=st.session_state.get('deriv_output')
         if out:
             x,y,z=st.columns([2,1,3]); x.markdown(f'**{out["instrument"]}**'); y.metric('Signal',out['result']['signal']); z.write(out['result']['reason'])
+            r=out['result']
+            stage=r.get('stage','WAITING FOR BREAKOUT')
+            if r.get('signal') in ('CALL','PUT'):
+                st.success(f'{stage} · {r.get("stage_detail", r.get("reason", ""))}')
+            elif 'FAILED' in stage or stage == 'WAITING FOR RANGE':
+                st.warning(f'{stage} · {r.get("stage_detail", r.get("reason", ""))}')
+            else:
+                st.info(f'{stage} · {r.get("stage_detail", r.get("reason", ""))}')
             with st.expander('Chart & range levels'):
                 st.plotly_chart(chart(out['df'],out['instrument']),use_container_width=True)
-                r=out['result']
                 if 'range_high' in r: st.write(f'Resistance: {fmt_price(r["range_high"])} · Support: {fmt_price(r["range_low"])} · ATR: {fmt_price(r["atr"])}')
     else:
         st.caption('Press CONNECT & SCAN DERIV to discover available Range Break instruments.')
