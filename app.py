@@ -14,8 +14,8 @@ except ImportError:
     websocket = None
 
 TZ = ZoneInfo('Africa/Lusaka')
-# Public Deriv application identifier. Streamlit Secrets / environment can override it.
-DERIV_APP_ID = os.getenv('DERIV_APP_ID', '34RmykWCl4bCGcD5achAQ')
+# Deriv's current public market-data WebSocket requires no App ID or account token.
+DERIV_PUBLIC_WS = 'wss://api.derivws.com/trading/v1/options/ws/public'
 FOREX_PAIRS = ['EUR/USD','GBP/USD','USD/JPY','USD/CHF','AUD/USD','USD/CAD','NZD/USD','EUR/GBP','EUR/JPY','GBP/JPY']
 
 st.set_page_config(page_title='Market Signal Desk', page_icon='📡', layout='wide')
@@ -95,8 +95,6 @@ class DerivClient:
     def __init__(self, timeout=15):
         if websocket is None:
             raise RuntimeError('Install websocket-client to connect to Deriv.')
-        if not DERIV_APP_ID:
-            raise RuntimeError('Set DERIV_APP_ID in Streamlit Secrets.')
         self.timeout = timeout
         self.ws = None
         self.req_id = 0
@@ -105,7 +103,7 @@ class DerivClient:
 
     @property
     def url(self):
-        return f'wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}'
+        return DERIV_PUBLIC_WS
 
     def connect(self):
         last_error = None
@@ -174,8 +172,18 @@ class DerivClient:
 
 def deriv_symbols(client=None):
     if client is not None:
-        data = client.request({'active_symbols': 'brief', 'product_type': 'basic'})
-        return data.get('active_symbols', [])
+        data = client.request({'active_symbols': 'brief'})
+        raw_symbols = data.get('active_symbols', [])
+        # Current API renamed symbol/display_name to underlying_symbol/name.
+        normalized = []
+        for item in raw_symbols:
+            row = dict(item)
+            row['symbol'] = row.get('underlying_symbol') or row.get('symbol') or ''
+            row['display_name'] = (row.get('underlying_symbol_name') or row.get('display_name')
+                                   or row.get('symbol') or row['symbol'])
+            if row['symbol']:
+                normalized.append(row)
+        return normalized
     with DerivClient() as temporary_client:
         return deriv_symbols(temporary_client)
 
@@ -272,7 +280,7 @@ with st.sidebar:
         scan=st.button('SCAN FOREX',type='primary',use_container_width=True)
     else:
         scan=st.button('CONNECT & SCAN DERIV',type='primary',use_container_width=True)
-        st.caption('Deriv public market data only. No account login or trade execution.')
+        st.caption('Deriv public market data only. No account login, App ID or trade execution required.')
         st.caption('Range Break symbols are discovered from Deriv’s active-symbol list; choose the exact symbols shown by your platform.')
         lookback=st.slider('Range lookback',12,40,24)
 
@@ -317,8 +325,12 @@ if run_scan:
                 with DerivClient(timeout=15) as deriv:
                     symbols=deriv_symbols(deriv)
                     matches=[s for s in symbols if any(k in (s.get('display_name','')+' '+s.get('symbol','')).lower() for k in ['range break','range_break','rangebreak'])]
+                    st.session_state['deriv_available_symbols'] = symbols
                     st.session_state['deriv_matches']=matches
-                    if not matches: raise RuntimeError('No Range Break instruments were found in Deriv public active symbols. Check the instrument names shown in your Deriv platform.')
+                    if not matches:
+                        visible = [f"{s.get('display_name', s.get('symbol',''))} [{s.get('symbol','')}]" for s in symbols if 'synthetic' in str(s.get('market','')).lower() or 'synthetic' in str(s.get('subgroup','')).lower()]
+                        sample = '; '.join(visible[:20]) or 'No synthetic symbols were returned by active_symbols.'
+                        raise RuntimeError('Connected to Deriv, but no Range Break 100/200 names matched. Synthetic symbols returned: ' + sample)
                     chosen_symbol=st.session_state.get('chosen_deriv_symbol',matches[0]['symbol'])
                     selected=next((s for s in matches if s['symbol']==chosen_symbol),matches[0])
                     df=fetch_deriv_candles(selected['symbol'],candles_count,deriv)
@@ -364,7 +376,13 @@ else:
                 st.plotly_chart(chart(out['df'],out['instrument']),use_container_width=True)
                 r=out['result']
                 if 'range_high' in r: st.write(f'Resistance: {fmt_price(r["range_high"])} · Support: {fmt_price(r["range_low"])} · ATR: {fmt_price(r["atr"])}')
-    else: st.caption('Press CONNECT & SCAN DERIV to discover available Range Break instruments.')
+    else:
+        st.caption('Press CONNECT & SCAN DERIV to discover available Range Break instruments.')
+        available = st.session_state.get('deriv_available_symbols', [])
+        if available:
+            with st.expander('Deriv symbols returned (diagnostics)'):
+                for item in available:
+                    st.write(f"{item.get('display_name', item.get('symbol',''))} · {item.get('symbol','')} · {item.get('market','')}")
 
 st.divider()
 st.caption('Research and alerting only — not financial advice. Data feeds can differ from Pocket Option/Deriv display quotes. Confirm the live price and candle timing on the trading platform. No signal guarantees a profitable outcome.')
