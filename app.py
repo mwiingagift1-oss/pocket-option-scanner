@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 try:
@@ -34,7 +35,7 @@ FOREX_PAIRS = [
 
 st.set_page_config(
     page_title="Market Signal Desk",
-    page_icon="📡",
+    page_icon="馃摗",
     layout="wide"
 )
 
@@ -68,10 +69,155 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📡 MARKET SIGNAL DESK")
+st.title("馃摗 MARKET SIGNAL DESK")
 st.caption(
-    "THREE STEPS Forex engine · GHOST Three-Step Staircase · CAT"
+    "THREE STEPS Forex engine 路 GHOST Three-Step Staircase 路 CAT"
 )
+
+
+
+def render_ghost_candle_clock(latest_tick=None):
+    """
+    Render a browser-side UTC minute clock. Its digits update every 100 ms,
+    independently of Streamlit reruns. Candle boundaries follow UTC minute
+    boundaries, matching the app's 1-minute tick resampling.
+    """
+    now_epoch = time.time()
+    tick_epoch = None
+    if latest_tick is not None:
+        try:
+            tick_epoch = pd.Timestamp(latest_tick).timestamp()
+        except Exception:
+            tick_epoch = None
+
+    if tick_epoch is not None:
+        candle_start = int(tick_epoch // 60) * 60
+        feed_age = max(0.0, now_epoch - tick_epoch)
+        # Only trust the feed's candle anchor while the latest tick is fresh.
+        if feed_age <= 8:
+            target_epoch = candle_start + 60
+            clock_source = "DERIV TICK TIMESTAMP"
+            feed_state = "LIVE FEED"
+        else:
+            target_epoch = int(now_epoch // 60) * 60 + 60
+            clock_source = "LOCAL UTC FALLBACK"
+            feed_state = f"FEED DELAYED 路 LAST TICK {feed_age:.1f}s AGO"
+    else:
+        target_epoch = int(now_epoch // 60) * 60 + 60
+        clock_source = "UTC CLOCK 路 WAITING FOR DERIV TICKS"
+        feed_state = "WAITING FOR LIVE FEED"
+
+    html = f"""
+    <div id="ghost-clock" style="font-family:Arial,sans-serif;background:#101827;
+        color:#f8fafc;border:1px solid #334155;border-radius:16px;padding:18px 16px;
+        text-align:center;">
+      <div style="font-size:12px;letter-spacing:2px;color:#9ca3af;font-weight:700;">
+        GHOST 路 LIVE CANDLE CLOCK
+      </div>
+      <div id="ghost-time" style="font-size:clamp(54px,10vw,82px);line-height:1.12;
+          font-weight:800;font-variant-numeric:tabular-nums;color:#34d399;margin:8px 0;">
+        00:00
+      </div>
+      <div id="ghost-label" style="font-size:14px;color:#cbd5e1;">
+        seconds until the next 1-minute candle
+      </div>
+      <div style="display:flex;justify-content:center;gap:10px;align-items:center;
+          flex-wrap:wrap;margin-top:14px;">
+        <span id="ghost-feed" style="font-size:11px;color:#a7f3d0;
+          border:1px solid #365b51;border-radius:20px;padding:5px 9px;">
+          {feed_state}
+        </span>
+        <button id="ghost-sound" type="button" style="border:1px solid #64748b;
+          background:#263449;color:#fff;border-radius:20px;padding:7px 12px;
+          font-size:12px;font-weight:700;">
+          馃敂 ENABLE SOUND
+        </button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:10px;">
+        {clock_source} 路 Alerts at 10 seconds and candle change
+      </div>
+    </div>
+    <script>
+    (() => {{
+      const targetAtLoad = {target_epoch * 1000};
+      const serverAtLoad = {now_epoch * 1000};
+      const clientAtLoad = Date.now();
+      const targetClient = targetAtLoad + (clientAtLoad - serverAtLoad);
+      const feedEl = document.getElementById("ghost-feed");
+      const timeEl = document.getElementById("ghost-time");
+      const labelEl = document.getElementById("ghost-label");
+      const soundBtn = document.getElementById("ghost-sound");
+      const storageKey = "ghost_candle_sound_enabled";
+      let enabled = false;
+      try {{ enabled = localStorage.getItem(storageKey) === "yes"; }} catch(e) {{}}
+      soundBtn.textContent = enabled ? "馃敂 SOUND ON" : "馃敂 ENABLE SOUND";
+
+      let audioCtx = null;
+      function beep(freq, duration) {{
+        if (!enabled || !audioCtx) return;
+        try {{
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.16, audioCtx.currentTime + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.start(); osc.stop(audioCtx.currentTime + duration + 0.03);
+        }} catch(e) {{}}
+      }}
+      soundBtn.addEventListener("click", () => {{
+        enabled = !enabled;
+        try {{ localStorage.setItem(storageKey, enabled ? "yes" : "no"); }} catch(e) {{}}
+        if (enabled) {{
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (AudioContextClass) {{
+            audioCtx = new AudioContextClass();
+            if (audioCtx.state === "suspended") audioCtx.resume();
+            beep(880, 0.12);
+          }}
+          soundBtn.textContent = "馃敂 SOUND ON";
+        }} else {{
+          soundBtn.textContent = "馃敂 ENABLE SOUND";
+        }}
+      }});
+
+      const minuteKey = "ghost_last_candle_alert";
+      let lastTenKey = "";
+      let lastBoundaryKey = "";
+      function updateClock() {{
+        const now = Date.now();
+        const remainingMs = targetClient - now;
+        const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
+        const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+        const ss = String(remaining % 60).padStart(2, "0");
+        timeEl.textContent = mm + ":" + ss;
+        labelEl.textContent = remaining > 0
+          ? "seconds until the next 1-minute candle"
+          : "new candle boundary reached";
+        timeEl.style.color = remaining <= 10 ? "#fbbf24" : "#34d399";
+
+        const thisMinute = Math.floor(now / 60000);
+        const tenKey = String(thisMinute) + ":10";
+        if (remaining === 10 && lastTenKey !== tenKey) {{
+          lastTenKey = tenKey;
+          beep(660, 0.18);
+        }}
+        if (remaining === 0) {{
+          const boundaryKey = String(Math.floor(targetClient / 60000));
+          if (lastBoundaryKey !== boundaryKey) {{
+            lastBoundaryKey = boundaryKey;
+            beep(990, 0.28);
+          }}
+        }}
+      }}
+      updateClock();
+      setInterval(updateClock, 100);
+    }})();
+    </script>
+    """
+    components.html(html, height=225, scrolling=False)
 
 
 # ============================================================
@@ -116,7 +262,7 @@ def get_secret_api_key():
 
 
 # ============================================================
-# FOREX ENGINE — THREE STEPS
+# FOREX ENGINE 鈥� THREE STEPS
 # ============================================================
 
 def fetch_forex(symbol, key, count):
@@ -639,7 +785,7 @@ def ghost_protocol(ticks):
                 f"level ({fmt_price(c1_close)}). Manual "
                 f"{'RISE' if direction == 'CALL' else 'FALL'} entry window."
             ),
-            "stage_detail": "CANDLE 2 CONFIRMED — CANDLE 3 ENTRY",
+            "stage_detail": "CANDLE 2 CONFIRMED 鈥� CANDLE 3 ENTRY",
             "pattern": pattern,
             "entry_point": c1_close,
             "candle1_time": c1_time,
@@ -652,7 +798,7 @@ def ghost_protocol(ticks):
         **base,
         "stage": "SCANNING",
         "reason": (
-            "Waiting for the next valid Candle 1 → Candle 2 → Candle 3 "
+            "Waiting for the next valid Candle 1 鈫� Candle 2 鈫� Candle 3 "
             "sequence. Candle size and higher-timeframe momentum are not filters."
         )
     }
@@ -728,7 +874,7 @@ def show_signal_pad(signal):
         f"""
         <div class="signal-card {color}">
             <div class="small-muted">
-                {signal["market"]} · {signal["instrument"]}
+                {signal["market"]} 路 {signal["instrument"]}
             </div>
             <h2>
                 {signal["direction"]}
@@ -757,7 +903,7 @@ def show_signal_pad(signal):
         + datetime.fromisoformat(signal["candle_time"]).strftime(
             "%Y-%m-%d %H:%M:%S CAT"
         )
-        + " · Created: "
+        + " 路 Created: "
         + datetime.fromisoformat(signal["signal_created"]).strftime(
             "%H:%M:%S CAT"
         )
@@ -807,8 +953,8 @@ with st.sidebar:
     market = st.radio(
         "Market engine",
         [
-            "Pocket Option Forex · THREE STEPS",
-            "Deriv Synthetics · GHOST PROTOCOL"
+            "Pocket Option Forex 路 THREE STEPS",
+            "Deriv Synthetics 路 GHOST PROTOCOL"
         ]
     )
 
@@ -880,11 +1026,11 @@ with st.sidebar:
 # ============================================================
 
 if auto_refresh:
-    st_autorefresh(interval=5000, key="desk_clock")
+    st_autorefresh(interval=15000, key="desk_clock")
 
 now = now_cat()
 st.caption(
-    f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
+    f"LOCAL TIME 路 {now.strftime('%A, %d %B %Y 路 %H:%M:%S CAT')}"
 )
 
 scan_interval = 15 if market.startswith("Deriv") else 60
@@ -1033,7 +1179,7 @@ show_signal_pad(active_signal)
 # ============================================================
 
 if market.startswith("Pocket"):
-    st.subheader("THREE STEPS · Forex scanner")
+    st.subheader("THREE STEPS 路 Forex scanner")
 
     results = (
         st.session_state.get("scan_output", [])
@@ -1066,8 +1212,8 @@ if market.startswith("Pocket"):
                 )
                 if "price" in result:
                     st.write(
-                        f'Last completed close: {fmt_price(result["price"])} · '
-                        f'EMA 9: {fmt_price(result["ema9"])} · '
+                        f'Last completed close: {fmt_price(result["price"])} 路 '
+                        f'EMA 9: {fmt_price(result["ema9"])} 路 '
                         f'EMA 21: {fmt_price(result["ema21"])}'
                     )
 
@@ -1077,7 +1223,7 @@ if market.startswith("Pocket"):
 # ============================================================
 
 else:
-    st.subheader("GHOST · THREE-STEP STAIRCASE")
+    st.subheader("GHOST 路 THREE-STEP STAIRCASE")
 
     output = (
         st.session_state.get("deriv_output")
@@ -1086,6 +1232,12 @@ else:
     )
 
     if output:
+        latest_tick_time = (
+            output["ticks"].datetime.iloc[-1]
+            if output.get("ticks") is not None and not output["ticks"].empty
+            else None
+        )
+        render_ghost_candle_clock(latest_tick_time)
         result = output["result"]
         stage = result.get("stage", "SCANNING")
         direction = result.get("signal", "WAIT")
@@ -1102,22 +1254,22 @@ else:
         if stage == "PREPARE":
             seconds = int(result.get("countdown", 0))
             st.warning(
-                f"PREPARE {direction} — Candle 2 is confirming. "
+                f"PREPARE {direction} 鈥� Candle 2 is confirming. "
                 f"Candle 3 begins in about {seconds} seconds. "
                 "Open Deriv and get ready; wait for the Candle 3 entry check."
             )
         elif stage == "ENTRY READY":
             action = "RISE / CALL" if direction == "CALL" else "FALL / PUT"
             st.success(
-                f"CANDLE 2 CONFIRMED — CANDLE 3 ENTRY: {action}. "
+                f"CANDLE 2 CONFIRMED 鈥� CANDLE 3 ENTRY: {action}. "
                 "This is a manual alert, not an automatic trade."
             )
         elif stage == "INVALIDATED":
-            st.error("SETUP INVALIDATED — DO NOT ENTER.")
+            st.error("SETUP INVALIDATED 鈥� DO NOT ENTER.")
         elif stage == "CANDLE 2 WAITING":
             st.info("Candle 1 identified. Waiting for Candle 2 to cross its close.")
         else:
-            st.info("SCANNING — waiting for a valid three-step staircase.")
+            st.info("SCANNING 鈥� waiting for a valid three-step staircase.")
 
         tick_age = result.get("tick_age")
         candle_age = result.get("candle_age")
@@ -1127,11 +1279,11 @@ else:
         if candle_age is not None:
             detail_parts.append(f"Current candle age: {candle_age:.1f}s")
         if detail_parts:
-            st.caption(" · ".join(detail_parts))
+            st.caption(" 路 ".join(detail_parts))
 
         with st.expander("GHOST live chart and setup details", expanded=True):
             st.plotly_chart(
-                chart(output["candles"], GHOST_NAME + " · 1-minute candles"),
+                chart(output["candles"], GHOST_NAME + " 路 1-minute candles"),
                 use_container_width=True
             )
             latest_price = result.get("price")
@@ -1148,6 +1300,7 @@ else:
                 + datetime.fromisoformat(last_scan).strftime("%Y-%m-%d %H:%M:%S")
             )
     else:
+        render_ghost_candle_clock()
         st.info(
             "Press CONNECT & SCAN GHOST to connect to Deriv "
             "and retrieve the first set of market data."
@@ -1163,7 +1316,7 @@ else:
 
 st.divider()
 st.caption(
-    "Research and demo alerting only — not financial advice. "
+    "Research and demo alerting only 鈥� not financial advice. "
     "GHOST does not place trades. Deriv data and execution quotes "
     "can differ. Confirm the live contract quote and timing. "
     "No signal guarantees a profitable outcome."
