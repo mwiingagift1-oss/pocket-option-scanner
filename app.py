@@ -70,7 +70,7 @@ st.markdown("""
 
 st.title("📡 MARKET SIGNAL DESK")
 st.caption(
-    "THREE STEPS Forex engine · GHOST multi-timeframe Deriv engine · CAT"
+    "THREE STEPS Forex engine · GHOST Three-Step Staircase · CAT"
 )
 
 
@@ -448,182 +448,213 @@ def aggregate_timeframe(one_minute, minutes):
     return result.reset_index(drop=True)
 
 
+
 # ============================================================
-# GHOST MULTI-TIMEFRAME STRATEGY
+# GHOST THREE-STEP STAIRCASE STRATEGY
 # ============================================================
+
+def identify_candle_one(candle, previous):
+    """Identify a directional first step from rejection, breakout, or close progression."""
+    o = float(candle.open)
+    h = float(candle.high)
+    l = float(candle.low)
+    c = float(candle.close)
+    previous_high = float(previous.high)
+    previous_low = float(previous.low)
+    previous_close = float(previous.close)
+
+    candle_range = max(h - l, 1e-12)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    close_position = (c - l) / candle_range
+
+    # Rejection has priority because it can signal a reversal regardless
+    # of the candle body colour.
+    bullish_rejection = (
+        lower_wick >= max(upper_wick * 1.25, candle_range * 0.25)
+        and close_position >= 0.55
+    )
+    bearish_rejection = (
+        upper_wick >= max(lower_wick * 1.25, candle_range * 0.25)
+        and close_position <= 0.45
+    )
+
+    if bullish_rejection:
+        return "CALL", "SUPPORT REJECTION"
+    if bearish_rejection:
+        return "PUT", "RESISTANCE REJECTION"
+    if c > previous_high:
+        return "CALL", "BULLISH BREAKOUT"
+    if c < previous_low:
+        return "PUT", "BEARISH BREAKOUT"
+    if c > previous_close:
+        return "CALL", "BULLISH DIRECTIONAL STEP"
+    if c < previous_close:
+        return "PUT", "BEARISH DIRECTIONAL STEP"
+    return None, "NO CLEAR FIRST STEP"
+
 
 def ghost_protocol(ticks):
-    latest_price = (
-        float(ticks.close.iloc[-1])
-        if ticks is not None and not ticks.empty
-        else None
-    )
+    """Candle 1 identifies, Candle 2 prepares/confirms, Candle 3 is entry."""
+    if ticks is None or ticks.empty:
+        return {
+            "signal": "WAIT", "stage": "SCANNING",
+            "reason": "Waiting for Deriv tick data."
+        }
 
-    wait = {
+    latest_price = float(ticks.close.iloc[-1])
+    now = pd.Timestamp.now(tz="UTC")
+    latest_tick = pd.Timestamp(ticks.datetime.iloc[-1])
+    tick_age = (now - latest_tick).total_seconds()
+
+    base = {
         "signal": "WAIT",
-        "reason": "Waiting for aligned market conditions.",
-        "stage": "ANALYSING",
-        "stage_detail": "",
-        "price": latest_price
+        "stage": "SCANNING",
+        "reason": "Waiting for a new three-candle staircase.",
+        "price": latest_price,
+        "tick_time": latest_tick,
+        "tick_age": tick_age
     }
 
-    one_minute = ticks_to_candles(ticks)
-    if len(one_minute) < 20:
-        return {
-            **wait,
-            "reason": "Collecting more one-minute candles."
-        }
+    if tick_age > 8 or tick_age < -2:
+        return {**base, "stage": "FEED CHECK", "reason":
+                f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."}
 
-    now = pd.Timestamp.now(tz="UTC")
+    candles = ticks_to_candles(ticks)
+    if len(candles) < 4:
+        return {**base, "reason": "Collecting enough one-minute candles."}
+
     current_minute = now.floor("min")
-    current = one_minute[
-        one_minute.datetime == current_minute
-    ]
-    completed_1m = one_minute[
-        one_minute.datetime < current_minute
-    ].copy()
+    forming = candles[candles.datetime == current_minute]
+    completed = candles[candles.datetime < current_minute].reset_index(drop=True)
 
-    five = aggregate_timeframe(completed_1m, 5)
-    fifteen = aggregate_timeframe(completed_1m, 15)
-
-    if len(five) < 6 or len(fifteen) < 5:
-        return {
-            **wait,
-            "reason": "Collecting enough completed 5m and 15m candles."
-        }
-
-    if current.empty:
-        return {
-            **wait,
-            "reason": "Waiting for the developing 1m candle."
-        }
-
-    live = current.iloc[-1]
-    price = latest_price
-    latest_tick = ticks.datetime.iloc[-1]
-
-    tick_age = (now - latest_tick).total_seconds()
-    if tick_age > 5 or tick_age < -2:
-        return {
-            **wait,
-            "reason": (
-                f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."
-            ),
-            "tick_age": tick_age
-        }
+    if forming.empty or len(completed) < 3:
+        return {**base, "reason": "Waiting for the current one-minute candle and history."}
 
     candle_age = (now - current_minute).total_seconds()
-    if candle_age < 10:
+    base.update({
+        "candle_time": current_minute,
+        "candle_age": candle_age
+    })
+
+    # Candle 2 is forming: the latest completed candle is Candle 1.
+    c1 = completed.iloc[-1]
+    previous = completed.iloc[-2]
+    c1_time = pd.Timestamp(c1.datetime)
+    direction, pattern = identify_candle_one(c1, previous)
+    c1_close = float(c1.close)
+
+    if direction and current_minute == c1_time + pd.Timedelta(minutes=1):
+        beyond_level = (
+            latest_price > c1_close if direction == "CALL"
+            else latest_price < c1_close
+        )
+        seconds_to_candle3 = max(
+            0, int(60 - candle_age)
+        )
+        if beyond_level:
+            return {
+                **base,
+                "signal": direction,
+                "stage": "PREPARE",
+                "reason": (
+                    f"{pattern} identified. Candle 2 has moved beyond "
+                    f"Candle 1 close ({fmt_price(c1_close)}). Prepare for "
+                    "Candle 3; wait for its entry confirmation."
+                ),
+                "stage_detail": "CANDLE 2 IS CONFIRMING",
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "entry_time": current_minute + pd.Timedelta(minutes=1),
+                "countdown": seconds_to_candle3
+            }
         return {
-            **wait,
-            "reason": "Waiting for the first 10 seconds of the 1m candle.",
-            "tick_age": tick_age,
-            "candle_age": candle_age
+            **base,
+            "stage": "CANDLE 2 WAITING",
+            "reason": (
+                f"{pattern} found. Waiting for price to move "
+                f"{'above' if direction == 'CALL' else 'below'} "
+                f"Candle 1 close at {fmt_price(c1_close)}."
+            ),
+            "pattern": pattern,
+            "entry_point": c1_close,
+            "candle1_time": c1_time
         }
 
-    if candle_age > 55:
+    # Candle 3 is forming: completed[-2] is Candle 1 and completed[-1] is Candle 2.
+    c1 = completed.iloc[-2]
+    c2 = completed.iloc[-1]
+    previous = completed.iloc[-3]
+    c1_time = pd.Timestamp(c1.datetime)
+    direction, pattern = identify_candle_one(c1, previous)
+    c1_close = float(c1.close)
+    c2_close = float(c2.close)
+
+    if direction and current_minute == c1_time + pd.Timedelta(minutes=2):
+        candle2_confirmed = (
+            c2_close > c1_close if direction == "CALL"
+            else c2_close < c1_close
+        )
+        candle3_still_valid = (
+            latest_price > c1_close if direction == "CALL"
+            else latest_price < c1_close
+        )
+
+        if not candle2_confirmed:
+            return {
+                **base,
+                "stage": "INVALIDATED",
+                "reason": (
+                    "Candle 2 did not close beyond Candle 1's closing "
+                    "price. The staircase is invalid. Do not enter."
+                ),
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "candle2_close": c2_close
+            }
+
+        if not candle3_still_valid:
+            return {
+                **base,
+                "stage": "INVALIDATED",
+                "reason": (
+                    "Candle 3 has moved back across the Candle 1 closing "
+                    "level. The setup is invalid. Do not enter."
+                ),
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "candle2_close": c2_close
+            }
+
         return {
-            **wait,
-            "reason": "Too late in the current 1m candle for a fresh signal.",
-            "tick_age": tick_age,
-            "candle_age": candle_age
+            **base,
+            "signal": direction,
+            "stage": "ENTRY READY",
+            "reason": (
+                f"Candle 2 closed {'above' if direction == 'CALL' else 'below'} "
+                f"Candle 1 close. Candle 3 is on the valid side of the entry "
+                f"level ({fmt_price(c1_close)}). Manual "
+                f"{'RISE' if direction == 'CALL' else 'FALL'} entry window."
+            ),
+            "stage_detail": "CANDLE 2 CONFIRMED — CANDLE 3 ENTRY",
+            "pattern": pattern,
+            "entry_point": c1_close,
+            "candle1_time": c1_time,
+            "candle2_close": c2_close,
+            "entry_time": current_minute,
+            "countdown": max(0, int(60 - candle_age))
         }
-
-    # 15-minute major direction
-    fifteen["ema3"] = fifteen.close.ewm(
-        span=3, adjust=False
-    ).mean()
-    fifteen["ema5"] = fifteen.close.ewm(
-        span=5, adjust=False
-    ).mean()
-    f15 = fifteen.iloc[-1]
-
-    bullish_15 = f15.ema3 > f15.ema5 and f15.close > f15.open
-    bearish_15 = f15.ema3 < f15.ema5 and f15.close < f15.open
-
-    # 5-minute momentum confirmation
-    five["ema3"] = five.close.ewm(
-        span=3, adjust=False
-    ).mean()
-    five["ema5"] = five.close.ewm(
-        span=5, adjust=False
-    ).mean()
-    f5 = five.iloc[-1]
-    previous_5 = five.iloc[-2]
-
-    bullish_5 = (
-        f5.ema3 > f5.ema5
-        and f5.close > f5.open
-        and f5.close > previous_5.close
-    )
-    bearish_5 = (
-        f5.ema3 < f5.ema5
-        and f5.close < f5.open
-        and f5.close < previous_5.close
-    )
-
-    # Developing 1-minute entry
-    candle_open = float(live.open)
-    candle_high = float(live.high)
-    candle_low = float(live.low)
-    candle_range = max(candle_high - candle_low, 1e-12)
-    body = abs(price - candle_open)
-    body_strength = body / candle_range
-
-    bullish_1 = price > candle_open and body_strength >= 0.35
-    bearish_1 = price < candle_open and body_strength >= 0.35
-
-    call = bullish_15 and bullish_5 and bullish_1
-    put = bearish_15 and bearish_5 and bearish_1
-
-    if call:
-        signal = "CALL"
-        reason = (
-            "15m bullish direction, 5m bullish momentum "
-            "and developing 1m bullish entry."
-        )
-    elif put:
-        signal = "PUT"
-        reason = (
-            "15m bearish direction, 5m bearish momentum "
-            "and developing 1m bearish entry."
-        )
-    else:
-        signal = "WAIT"
-        reason = (
-            "The 15m trend, 5m momentum and 1m entry "
-            "are not fully aligned."
-        )
 
     return {
-        "signal": signal,
-        "reason": reason,
-        "stage": (
-            "SIGNAL READY" if signal != "WAIT"
-            else "WAITING FOR ALIGNMENT"
-        ),
-        "stage_detail": reason,
-        "price": price,
-        "candle_time": current_minute,
-        "tick_time": latest_tick,
-        "tick_age": tick_age,
-        "candle_age": candle_age,
-        "trend_15m": (
-            "BULLISH" if bullish_15
-            else "BEARISH" if bearish_15
-            else "NEUTRAL"
-        ),
-        "momentum_5m": (
-            "BULLISH" if bullish_5
-            else "BEARISH" if bearish_5
-            else "NEUTRAL"
-        ),
-        "entry_1m": (
-            "BULLISH" if bullish_1
-            else "BEARISH" if bearish_1
-            else "NEUTRAL"
-        ),
-        "body_strength": body_strength
+        **base,
+        "stage": "SCANNING",
+        "reason": (
+            "Waiting for the next valid Candle 1 → Candle 2 → Candle 3 "
+            "sequence. Candle size and higher-timeframe momentum are not filters."
+        )
     }
 
 
@@ -631,9 +662,14 @@ def ghost_protocol(ticks):
 # SIGNAL TIMER AND RECORD
 # ============================================================
 
+
 def build_signal_record(market, instrument, result, expiry=1):
     created = now_cat()
-    entry = created
+    entry_value = result.get("entry_time")
+    if entry_value is not None:
+        entry = as_cat(entry_value).to_pydatetime()
+    else:
+        entry = created
     expiration = entry + timedelta(minutes=expiry)
 
     return {
@@ -641,13 +677,16 @@ def build_signal_record(market, instrument, result, expiry=1):
         "instrument": instrument,
         "direction": result["signal"],
         "reason": result["reason"],
+        "stage": result.get("stage", "ENTRY READY"),
+        "pattern": result.get("pattern", ""),
+        "entry_point": result.get("entry_point"),
         "signal_created": created.isoformat(),
         "candle_time": as_cat(result["candle_time"]).isoformat(),
-        "reference_price": result["price"],
+        "reference_price": result.get("price"),
         "entry_time": entry.isoformat(),
         "expiry_time": expiration.isoformat(),
         "expiry_minutes": expiry,
-        "status": "ENTRY WINDOW"
+        "status": "PREPARE" if result.get("stage") == "PREPARE" else "ENTRY WINDOW"
     }
 
 
@@ -696,7 +735,9 @@ def show_signal_pad(signal):
                 &nbsp;
                 <span style="font-size:0.8em">{status}</span>
             </h2>
+            <div><b>{signal.get("stage", status)}</b></div>
             <div>{signal["reason"]}</div>
+            <div>Entry level: {fmt_price(signal.get("entry_point"))}</div>
         </div>
         """,
         unsafe_allow_html=True
@@ -951,22 +992,22 @@ if run_scan:
             }
             st.session_state["scan_market"] = "deriv"
 
-            if result.get("signal") in ("CALL", "PUT"):
+            if (
+                result.get("signal") in ("CALL", "PUT")
+                and result.get("stage") in ("PREPARE", "ENTRY READY")
+            ):
                 existing = st.session_state.get("active_signal")
                 same_signal = (
                     existing
                     and existing.get("direction") == result["signal"]
                     and existing.get("candle_time")
                     == as_cat(result["candle_time"]).isoformat()
+                    and existing.get("stage") == result.get("stage")
                     and existing.get("instrument") == GHOST_NAME
                 )
-
                 if not same_signal:
                     st.session_state["active_signal"] = build_signal_record(
-                        "GHOST PROTOCOL",
-                        GHOST_NAME,
-                        result,
-                        1
+                        "GHOST PROTOCOL", GHOST_NAME, result, 1
                     )
             else:
                 active = st.session_state.get("active_signal")
@@ -1036,7 +1077,7 @@ if market.startswith("Pocket"):
 # ============================================================
 
 else:
-    st.subheader("GHOST PROTOCOL · Deriv Rise/Fall")
+    st.subheader("GHOST · THREE-STEP STAIRCASE")
 
     output = (
         st.session_state.get("deriv_output")
@@ -1046,81 +1087,66 @@ else:
 
     if output:
         result = output["result"]
+        stage = result.get("stage", "SCANNING")
+        direction = result.get("signal", "WAIT")
 
-        col1, col2, col3 = st.columns([2, 1, 3])
-        col1.markdown(f'**{output["instrument"]}**')
-        col2.metric("Signal", result.get("signal", "WAIT"))
-        col3.write(result.get("reason", "Waiting for analysis."))
-
-        st.markdown("### Multi-timeframe analysis")
+        st.markdown("### The three-candle sequence")
         a, b, c = st.columns(3)
-        a.metric("15-minute direction", result.get("trend_15m", "—"))
-        b.metric("5-minute momentum", result.get("momentum_5m", "—"))
-        c.metric("1-minute entry", result.get("entry_1m", "—"))
+        a.metric("CANDLE 1", "IDENTIFY")
+        b.metric("CANDLE 2", "PREPARE / CONFIRM")
+        c.metric("CANDLE 3", "ENTRY")
+
+        st.markdown(f"**Current stage: {stage}**")
+        st.write(result.get("reason", "Waiting for a valid setup."))
+
+        if stage == "PREPARE":
+            seconds = int(result.get("countdown", 0))
+            st.warning(
+                f"PREPARE {direction} — Candle 2 is confirming. "
+                f"Candle 3 begins in about {seconds} seconds. "
+                "Open Deriv and get ready; wait for the Candle 3 entry check."
+            )
+        elif stage == "ENTRY READY":
+            action = "RISE / CALL" if direction == "CALL" else "FALL / PUT"
+            st.success(
+                f"CANDLE 2 CONFIRMED — CANDLE 3 ENTRY: {action}. "
+                "This is a manual alert, not an automatic trade."
+            )
+        elif stage == "INVALIDATED":
+            st.error("SETUP INVALIDATED — DO NOT ENTER.")
+        elif stage == "CANDLE 2 WAITING":
+            st.info("Candle 1 identified. Waiting for Candle 2 to cross its close.")
+        else:
+            st.info("SCANNING — waiting for a valid three-step staircase.")
 
         tick_age = result.get("tick_age")
         candle_age = result.get("candle_age")
-        body_strength = result.get("body_strength")
-
-        status_parts = []
+        detail_parts = []
         if tick_age is not None:
-            status_parts.append(f"Tick age: {tick_age:.2f}s")
+            detail_parts.append(f"Tick age: {tick_age:.1f}s")
         if candle_age is not None:
-            status_parts.append(f"1m candle age: {candle_age:.1f}s")
-        if body_strength is not None:
-            status_parts.append(f"1m body strength: {body_strength:.0%}")
-        if status_parts:
-            st.caption(" · ".join(status_parts))
+            detail_parts.append(f"Current candle age: {candle_age:.1f}s")
+        if detail_parts:
+            st.caption(" · ".join(detail_parts))
 
-        if result.get("signal") == "CALL":
-            st.success(
-                "RISE conditions aligned. This is a demo research signal, "
-                "not a guaranteed winning trade."
-            )
-        elif result.get("signal") == "PUT":
-            st.error(
-                "FALL conditions aligned. This is a demo research signal, "
-                "not a guaranteed winning trade."
-            )
-        else:
-            st.info("NO SIGNAL. Wait for all three timeframes to align.")
-
-        with st.expander("GHOST live chart and details", expanded=True):
+        with st.expander("GHOST live chart and setup details", expanded=True):
             st.plotly_chart(
-                chart(
-                    output["candles"],
-                    GHOST_NAME + " · 1-minute candles"
-                ),
+                chart(output["candles"], GHOST_NAME + " · 1-minute candles"),
                 use_container_width=True
             )
-
             latest_price = result.get("price")
-            if latest_price is not None:
-                st.write(f"Latest price: {fmt_price(latest_price)}")
-            else:
-                st.write(
-                    "Latest price: Unavailable — waiting for valid market data."
-                )
-
-            st.write(
-                f'15m direction: {result.get("trend_15m", "—")}'
-            )
-            st.write(
-                f'5m momentum: {result.get("momentum_5m", "—")}'
-            )
-            st.write(
-                f'1m entry: {result.get("entry_1m", "—")}'
-            )
+            st.write(f"Latest price: {fmt_price(latest_price)}")
+            st.write(f"Pattern: {result.get('pattern', 'Not identified')}")
+            st.write(f"Entry reference (Candle 1 close): {fmt_price(result.get('entry_point'))}")
+            if result.get("candle2_close") is not None:
+                st.write(f"Candle 2 close: {fmt_price(result.get('candle2_close'))}")
 
         last_scan = output.get("last_scan")
         if last_scan:
             st.caption(
                 "Last successful Deriv scan (CAT): "
-                + datetime.fromisoformat(last_scan).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
+                + datetime.fromisoformat(last_scan).strftime("%Y-%m-%d %H:%M:%S")
             )
-
     else:
         st.info(
             "Press CONNECT & SCAN GHOST to connect to Deriv "
@@ -1128,7 +1154,7 @@ else:
         )
         last_error = st.session_state.get("deriv_scan_error")
         if last_error:
-            st.warning(f"Most recent scan error: {last_error}")
+            st.warning(f"Most recent Deriv scan error: {last_error}")
 
 
 # ============================================================
