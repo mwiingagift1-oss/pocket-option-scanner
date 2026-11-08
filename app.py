@@ -640,6 +640,55 @@ def identify_candle_one(candle, previous):
     return None, "NO CLEAR FIRST STEP"
 
 
+def assess_candle3_risk(completed, direction, c2, latest_price):
+    """Return soft Candle 3 risk warnings; never overrides hard staircase rules."""
+    warnings = []
+    o = float(c2.open)
+    h = float(c2.high)
+    l = float(c2.low)
+    c = float(c2.close)
+    candle_range = max(h - l, 1e-12)
+    body = abs(c - o)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+
+    if body / candle_range <= 0.15:
+        warnings.append(
+            "Candle 2 is an indecision candle (small body relative to its range)."
+        )
+
+    if direction == "CALL":
+        if upper_wick >= max(body * 1.5, candle_range * 0.35):
+            warnings.append(
+                "Candle 2 has a notable upper rejection wick against the bullish move."
+            )
+        prior = completed.iloc[:-2].tail(12)
+        if not prior.empty:
+            resistance = float(prior.high.max())
+            distance = resistance - float(latest_price)
+            if 0 <= distance <= candle_range:
+                warnings.append(
+                    "Price is within one Candle 2 range of a recent high "
+                    f"({fmt_price(resistance)}), which may act as resistance."
+                )
+    else:
+        if lower_wick >= max(body * 1.5, candle_range * 0.35):
+            warnings.append(
+                "Candle 2 has a notable lower rejection wick against the bearish move."
+            )
+        prior = completed.iloc[:-2].tail(12)
+        if not prior.empty:
+            support = float(prior.low.min())
+            distance = float(latest_price) - support
+            if 0 <= distance <= candle_range:
+                warnings.append(
+                    "Price is within one Candle 2 range of a recent low "
+                    f"({fmt_price(support)}), which may act as support."
+                )
+
+    return warnings
+
+
 def ghost_protocol(ticks):
     """Candle 1 identifies, Candle 2 prepares/confirms, Candle 3 is entry."""
     if ticks is None or ticks.empty:
@@ -775,6 +824,29 @@ def ghost_protocol(ticks):
                 "candle2_close": c2_close
             }
 
+        warnings = assess_candle3_risk(
+            completed, direction, c2, latest_price
+        )
+        if warnings:
+            return {
+                **base,
+                "signal": direction,
+                "stage": "CAUTION",
+                "reason": (
+                    "The Three-Step Staircase is valid, but Candle 2 / nearby "
+                    "price structure shows possible opposing pressure. "
+                    "Review the warnings; this is NOT an ENTRY READY alert."
+                ),
+                "warnings": warnings,
+                "stage_detail": "STAIRCASE VALID 鈥� CAUTION",
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "candle2_close": c2_close,
+                "entry_time": current_minute,
+                "countdown": max(0, int(60 - candle_age))
+            }
+
         return {
             **base,
             "signal": direction,
@@ -785,6 +857,7 @@ def ghost_protocol(ticks):
                 f"level ({fmt_price(c1_close)}). Manual "
                 f"{'RISE' if direction == 'CALL' else 'FALL'} entry window."
             ),
+            "warnings": [],
             "stage_detail": "CANDLE 2 CONFIRMED 鈥� CANDLE 3 ENTRY",
             "pattern": pattern,
             "entry_point": c1_close,
@@ -1264,6 +1337,14 @@ else:
                 f"CANDLE 2 CONFIRMED 鈥� CANDLE 3 ENTRY: {action}. "
                 "This is a manual alert, not an automatic trade."
             )
+        elif stage == "CAUTION":
+            st.warning(
+                f"CAUTION {direction} 鈥� staircase rules are still valid, "
+                "but opposing candle behaviour or nearby structure was detected. "
+                "This is NOT an ENTRY READY signal. Do not treat it as an automatic entry."
+            )
+            for warning in result.get("warnings", []):
+                st.write(f"鈥� {warning}")
         elif stage == "INVALIDATED":
             st.error("SETUP INVALIDATED 鈥� DO NOT ENTER.")
         elif stage == "CANDLE 2 WAITING":
