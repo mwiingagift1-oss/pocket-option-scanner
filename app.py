@@ -1,4 +1,4 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Unscrollable, Candlestick Chart, Split Layout)
+# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Unscrollable, Candlestick Chart, Timers & Expiry)
 
 import os
 import json
@@ -16,6 +16,12 @@ try:
     STREAMLIT_AVAILABLE = True
 except ImportError:
     STREAMLIT_AVAILABLE = False
+
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
 
 try:
     import websocket
@@ -37,15 +43,13 @@ if STREAMLIT_AVAILABLE:
         initial_sidebar_state="collapsed"
     )
 
-    # Unscrollable Desktop Terminal CSS Styling
+    # Unscrollable Desktop Terminal CSS Styling with Live Timer styles
     st.markdown("""
     <style>
-        /* Hide Streamlit Chrome */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
         
-        /* Lock body scroll and fit exact screen */
         html, body, [data-testid="stAppViewContainer"] {
             background-color: #06090f;
             color: #f1f5f9;
@@ -63,13 +67,12 @@ if STREAMLIT_AVAILABLE:
             flex-direction: column;
         }
 
-        /* Terminal Header Bar */
         .term-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
             border: 1px solid #334155;
             border-radius: 10px;
             padding: 8px 16px;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -87,16 +90,15 @@ if STREAMLIT_AVAILABLE:
             margin: 0;
         }
 
-        /* Terminal Cards */
         .term-card {
             background: #0f172a;
             border: 1px solid #1e293b;
             border-radius: 8px;
-            padding: 10px 12px;
-            margin-bottom: 6px;
+            padding: 8px 12px;
+            margin-bottom: 5px;
         }
         .card-label {
-            font-size: 0.65rem;
+            font-size: 0.62rem;
             text-transform: uppercase;
             letter-spacing: 1px;
             color: #94a3b8;
@@ -104,42 +106,41 @@ if STREAMLIT_AVAILABLE:
             margin-bottom: 2px;
         }
 
-        /* Status Badges */
         .badge-ready {
             background: rgba(22, 163, 74, 0.25);
             border: 1px solid #16a34a;
             color: #4ade80;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding: 3px 8px;
+            border-radius: 10px;
             font-weight: 700;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
         }
         .badge-caution {
             background: rgba(234, 179, 8, 0.25);
             border: 1px solid #ca8a04;
             color: #facc15;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding: 3px 8px;
+            border-radius: 10px;
             font-weight: 700;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
         }
         .badge-unclear {
             background: rgba(220, 38, 38, 0.25);
             border: 1px solid #dc2626;
             color: #f87171;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding: 3px 8px;
+            border-radius: 10px;
             font-weight: 700;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
         }
         .badge-wait {
             background: rgba(100, 116, 139, 0.25);
             border: 1px solid #475569;
             color: #cbd5e1;
-            padding: 4px 10px;
-            border-radius: 12px;
+            padding: 3px 8px;
+            border-radius: 10px;
             font-weight: 700;
-            font-size: 0.75rem;
+            font-size: 0.7rem;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -160,9 +161,6 @@ def blank_result(reason, state="WAIT"):
         "reason": reason
     }
 
-# ============================================================
-# ANALYSIS ENGINES
-# ============================================================
 def analyze_buyer_seller_story(completed):
     if completed is None or len(completed) < 3:
         return {"control": "NEUTRAL", "story": "Accumulating initial candles."}
@@ -170,10 +168,10 @@ def analyze_buyer_seller_story(completed):
     bullish = sum(tail.close > tail.open)
     bearish = sum(tail.close < tail.open)
     if bullish >= 3:
-        return {"control": "BUYERS", "story": "Buyers maintain progressive upward control."}
+        return {"control": "BUYERS", "story": "Buyers maintain upward control."}
     elif bearish >= 3:
         return {"control": "SELLERS", "story": "Sellers maintain downward momentum."}
-    return {"control": "BALANCED", "story": "Buyers and sellers balanced with alternating behaviour."}
+    return {"control": "BALANCED", "story": "Buyers and sellers balanced."}
 
 def detect_choppy_market(completed):
     if completed is None or len(completed) < 5:
@@ -206,7 +204,7 @@ def ghost_protocol(ticks, now=None):
     tick_age = (now - latest_tick).total_seconds()
     
     base = {"signal": "WAIT", "state": "WAIT", "reason": "Scanning setup.", "price": latest_price}
-    if tick_age > 15 or tick_age < -5:
+    if tick_age > 25 or tick_age < -10:
         return {**base, "state": "FEED CHECK", "reason": f"Feed stale ({tick_age:.1f}s)."}
         
     series = ticks.set_index("datetime")["close"].sort_index(kind="stable")
@@ -242,8 +240,23 @@ def ghost_protocol(ticks, now=None):
             c2_confirmed = (c2_close > c1_close) if direction == "CALL" else (c2_close < c1_close)
             price_valid = (latest_price > c1_close) if direction == "CALL" else (latest_price < c1_close)
             
+            c1_time = pd.Timestamp(c1.datetime)
+            entry_time = c1_time + timedelta(minutes=2)
+            expiry_time = entry_time + timedelta(minutes=1)
+            seconds_to_boundary = max(0, int(60 - (now.timestamp() % 60)))
+            
             if not c2_confirmed or not price_valid:
-                return {**base, "signal": "WAIT", "state": "INVALIDATED", "reason": "C2 close or C3 price validation failed.", "entry_point": c1_close, "pattern": "Staircase Step"}
+                return {
+                    **base, 
+                    "signal": "WAIT", 
+                    "state": "INVALIDATED", 
+                    "reason": "C2 close or C3 price validation failed.", 
+                    "entry_point": c1_close, 
+                    "pattern": "Staircase Step",
+                    "entry_time": entry_time.strftime("%H:%M:%S"),
+                    "expiry_time": expiry_time.strftime("%H:%M:%S"),
+                    "countdown": seconds_to_boundary
+                }
                 
             return {
                 **base,
@@ -251,16 +264,24 @@ def ghost_protocol(ticks, now=None):
                 "state": "ENTRY READY",
                 "reason": f"Staircase confirmed ({direction}). C2 closed beyond C1 close.",
                 "entry_point": c1_close,
-                "pattern": "Three-Step Staircase"
+                "pattern": "Three-Step Staircase",
+                "entry_time": entry_time.strftime("%H:%M:%S"),
+                "expiry_time": expiry_time.strftime("%H:%M:%S"),
+                "countdown": seconds_to_boundary
             }
             
-    return {**base, "state": "SETUP DEVELOPING", "reason": "Analyzing staircase formation."}
+    seconds_to_boundary = max(0, int(60 - (now.timestamp() % 60)))
+    return {
+        **base, 
+        "state": "SETUP DEVELOPING", 
+        "reason": "Analyzing staircase formation.",
+        "entry_time": (now + timedelta(minutes=1)).strftime("%H:%M:%S"),
+        "expiry_time": (now + timedelta(minutes=2)).strftime("%H:%M:%S"),
+        "countdown": seconds_to_boundary
+    }
 
-# ============================================================
-# DERIV CLIENT & DATA
-# ============================================================
 class DerivClient:
-    def __init__(self, timeout=20):
+    def __init__(self, timeout=15):
         if not WEBSOCKET_AVAILABLE:
             raise RuntimeError("websocket-client not installed.")
         self.timeout = timeout
@@ -294,22 +315,24 @@ def fetch_deriv_ticks(symbol, count=1000):
     except:
         return pd.DataFrame(columns=["datetime", "close"])
 
-# ============================================================
-# DESKTOP TERMINAL LAYOUT (SPLIT SCREEN: CHART LEFT, SIGNAL PAD RIGHT)
-# ============================================================
 def main():
     if not STREAMLIT_AVAILABLE:
         return
 
-    # Header
-    st.markdown("""
+    # Auto-refresh every 3 seconds so feed updates dynamically
+    if AUTOREFRESH_AVAILABLE:
+        st_autorefresh(interval=3000, key="ghost_live_feed_ticker")
+
+    now_cat = datetime.now(TZ)
+    
+    st.markdown(f"""
     <div class="term-header">
         <div>
             <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
-            <p class="term-sub">Volatility 100 (1s) Index • Unscrollable Desktop Edition</p>
+            <p class="term-sub">Volatility 100 (1s) Index • Local Time: {now_cat.strftime('%H:%M:%S')} (CAT)</p>
         </div>
         <div>
-            <span style="font-size:0.7rem; color:#34d399; background:rgba(52,211,153,0.1); padding:4px 10px; border-radius:10px; border:1px solid rgba(52,211,153,0.3);">🟢 LIVE STREAM</span>
+            <span style="font-size:0.7rem; color:#34d399; background:rgba(52,211,153,0.1); padding:4px 10px; border-radius:10px; border:1px solid rgba(52,211,153,0.3);">🟢 LIVE STREAM (AUTO 3S)</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -319,13 +342,11 @@ def main():
     state = analysis.get("state", "WAIT")
     signal = analysis.get("signal", "WAIT")
 
-    # Resample ticks into 1-minute OHLC candles for the original candlestick chart
     if not ticks.empty:
         candles = ticks.set_index("datetime")["close"].resample("1min").ohlc().dropna().tail(30).reset_index()
     else:
         candles = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
 
-    # Split Screen: Left = Live Candlestick Chart, Right = Signal Pad & Intelligence
     left_col, right_col = st.columns([1.6, 1])
 
     with left_col:
@@ -343,7 +364,7 @@ def main():
                 decreasing_line_color='#ef4444'
             )])
             fig.update_layout(
-                height=410,
+                height=390,
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor="#0f172a",
                 plot_bgcolor="#0f172a",
@@ -358,7 +379,6 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right_col:
-        # Signal Pad Card
         badge_class = "badge-wait"
         if state == "ENTRY READY":
             badge_class = "badge-ready"
@@ -367,54 +387,52 @@ def main():
         elif state == "MARKET UNCLEAR" or state == "INVALIDATED":
             badge_class = "badge-unclear"
 
+        countdown_val = analysis.get('countdown', 0)
+
         st.markdown(f"""
-        <div class="term-card" style="text-align: center; padding: 12px;">
+        <div class="term-card" style="text-align: center; padding: 10px;">
             <div class="card-label">Signal Pad & Decision State</div>
-            <div style="margin: 6px 0;">
+            <div style="margin: 4px 0;">
                 <span class="{badge_class}">{state} ({signal})</span>
             </div>
-            <div style="font-size: 1.5rem; font-weight: 800; color: #f8fafc; margin-top: 4px;">
-                {fmt_price(analysis.get('price', 0))}
+            <div style="font-size: 1.3rem; font-weight: 800; color: #f8fafc; margin-top: 2px;">
+                {fmt_price(analysis.get('price', 0))} <span style="font-size:0.75rem; color:#34d399;">(Countdown: {countdown_val}s)</span>
             </div>
-            <div class="card-label">Live Price</div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Execution Logic & Reference
         st.markdown(f"""
         <div class="term-card">
-            <div class="card-label">Execution Details</div>
-            <div style="font-size: 0.78rem; color: #cbd5e1; margin-top: 2px;">
-                <b>Reference (C1):</b> {fmt_price(analysis.get('entry_point', 0))}<br>
-                <b>Pattern:</b> {analysis.get('pattern', 'Scanning...')}<br>
+            <div class="card-label">Timing & Execution Details</div>
+            <div style="font-size: 0.75rem; color: #cbd5e1; margin-top: 2px; line-height: 1.3;">
+                <b>Entry Time:</b> <span style="color:#38bdf8;">{analysis.get('entry_time', '--:--:--')}</span> | <b>Expiry:</b> <span style="color:#f43f5e;">{analysis.get('expiry_time', '--:--:--')}</span><br>
+                <b>Reference (C1 Close):</b> {fmt_price(analysis.get('entry_point', 0))}<br>
                 <b>Reason:</b> {analysis.get('reason', '')}
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Buyer / Seller Story Card
         bs = analysis.get("buyer_seller", {})
         st.markdown(f"""
         <div class="term-card">
             <div class="card-label">🧠 Buyer / Seller Story</div>
-            <div style="font-size: 0.78rem; color: #34d399; font-weight: 700; margin-top: 2px;">
+            <div style="font-size: 0.75rem; color: #34d399; font-weight: 700; margin-top: 2px;">
                 Control: {bs.get('control', 'Analyzing...')}
             </div>
-            <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 2px;">
+            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 1px;">
                 {bs.get('story', '')}
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # Market Structure Card
         ms = analysis.get("market_structure", {})
         st.markdown(f"""
         <div class="term-card">
             <div class="card-label">🏗️ Market Structure</div>
-            <div style="font-size: 0.78rem; color: #38bdf8; font-weight: 700; margin-top: 2px;">
+            <div style="font-size: 0.75rem; color: #38bdf8; font-weight: 700; margin-top: 2px;">
                 Bias: {ms.get('trend', 'SIDEWAYS')}
             </div>
-            <div style="font-size: 0.75rem; color: #94a3b8; margin-top: 2px;">
+            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 1px;">
                 {ms.get('detail', '')}
             </div>
         </div>
