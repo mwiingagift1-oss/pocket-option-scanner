@@ -1,3 +1,5 @@
+# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Pure Streamlit Live Loop)
+
 import os
 import json
 import time
@@ -14,12 +16,6 @@ try:
     STREAMLIT_AVAILABLE = True
 except ImportError:
     STREAMLIT_AVAILABLE = False
-
-try:
-    from streamlit_autorefresh import st_autorefresh
-    AUTOREFRESH_AVAILABLE = True
-except ImportError:
-    AUTOREFRESH_AVAILABLE = False
 
 try:
     import websocket
@@ -82,7 +78,6 @@ if STREAMLIT_AVAILABLE:
             letter-spacing: 0.5px;
         }
         
-        /* Enlarged Live Digital Clock Pad */
         .live-clock-pad {
             font-family: monospace;
             font-size: 1.15rem;
@@ -111,7 +106,6 @@ if STREAMLIT_AVAILABLE:
             margin-bottom: 2px;
         }
 
-        /* Enlarged Timing Metrics Pads */
         .big-time-pad {
             background: #1e293b;
             border: 1px solid #334155;
@@ -231,7 +225,7 @@ def ghost_protocol(ticks, now=None):
     tick_age = (now - latest_tick).total_seconds()
     
     base = {"signal": "WAIT", "state": "WAIT", "reason": "Scanning setup.", "price": latest_price}
-    if tick_age > 25 or tick_age < -10:
+    if tick_age > 35 or tick_age < -15:
         return {**base, "state": "FEED CHECK", "reason": f"Feed stale ({tick_age:.1f}s)."}
         
     series = ticks.set_index("datetime")["close"].sort_index(kind="stable")
@@ -308,7 +302,7 @@ def ghost_protocol(ticks, now=None):
     }
 
 class DerivClient:
-    def __init__(self, timeout=15):
+    def __init__(self, timeout=10):
         if not WEBSOCKET_AVAILABLE:
             raise RuntimeError("websocket-client not installed.")
         self.timeout = timeout
@@ -346,16 +340,13 @@ def main():
     if not STREAMLIT_AVAILABLE:
         return
 
-    if AUTOREFRESH_AVAILABLE:
-        st_autorefresh(interval=3000, key="ghost_live_feed_ticker")
-
     now_cat = datetime.now(TZ)
     
     st.markdown(f"""
     <div class="term-header">
         <div>
             <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
-            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • Auto Stream (3s)</span>
+            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • Pure Stream Loop</span>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
             <div class="live-clock-pad">
@@ -475,6 +466,10 @@ def main():
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+    # Native Python Loop for Continuous Real-Time Updates without external dependencies
+    time.sleep(3)
+    st.rerun()
 
 if __name__ == "__main__":
     main()
