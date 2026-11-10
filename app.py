@@ -1,4 +1,4 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Unscrollable, Candlestick Chart, Timers & Expiry)
+# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Enlarged Timing Pads & Prep Timer)
 
 import os
 import json
@@ -43,7 +43,6 @@ if STREAMLIT_AVAILABLE:
         initial_sidebar_state="collapsed"
     )
 
-    # Unscrollable Desktop Terminal CSS Styling with Live Timer styles
     st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -59,7 +58,7 @@ if STREAMLIT_AVAILABLE:
         }
         
         .block-container {
-            padding: 0.5rem 1rem !important;
+            padding: 0.4rem 0.8rem !important;
             max-width: 100% !important;
             height: 100vh;
             overflow: hidden !important;
@@ -71,30 +70,38 @@ if STREAMLIT_AVAILABLE:
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
             border: 1px solid #334155;
             border-radius: 10px;
-            padding: 8px 16px;
-            margin-bottom: 6px;
+            padding: 6px 14px;
+            margin-bottom: 5px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
         .term-title {
-            font-size: 1rem;
+            font-size: 0.95rem;
             font-weight: 800;
             color: #34d399;
             margin: 0;
             letter-spacing: 0.5px;
         }
-        .term-sub {
-            font-size: 0.7rem;
-            color: #94a3b8;
-            margin: 0;
+        
+        /* Enlarged Live Digital Clock Pad */
+        .live-clock-pad {
+            font-family: monospace;
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: #34d399;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid #334155;
+            padding: 4px 12px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(52, 211, 153, 0.15);
         }
 
         .term-card {
             background: #0f172a;
             border: 1px solid #1e293b;
             border-radius: 8px;
-            padding: 8px 12px;
+            padding: 8px 10px;
             margin-bottom: 5px;
         }
         .card-label {
@@ -106,41 +113,63 @@ if STREAMLIT_AVAILABLE:
             margin-bottom: 2px;
         }
 
+        /* Enlarged Timing Metrics Pads */
+        .big-time-pad {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 8px 10px;
+            text-align: center;
+        }
+        .big-time-val {
+            font-size: 1.35rem;
+            font-weight: 800;
+            font-family: monospace;
+            margin: 2px 0;
+        }
+        .big-time-lbl {
+            font-size: 0.62rem;
+            font-weight: 700;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+
         .badge-ready {
             background: rgba(22, 163, 74, 0.25);
             border: 1px solid #16a34a;
             color: #4ade80;
-            padding: 3px 8px;
+            padding: 4px 10px;
             border-radius: 10px;
-            font-weight: 700;
-            font-size: 0.7rem;
+            font-weight: 800;
+            font-size: 0.8rem;
         }
         .badge-caution {
             background: rgba(234, 179, 8, 0.25);
             border: 1px solid #ca8a04;
             color: #facc15;
-            padding: 3px 8px;
+            padding: 4px 10px;
             border-radius: 10px;
-            font-weight: 700;
-            font-size: 0.7rem;
+            font-weight: 800;
+            font-size: 0.8rem;
         }
         .badge-unclear {
             background: rgba(220, 38, 38, 0.25);
             border: 1px solid #dc2626;
             color: #f87171;
-            padding: 3px 8px;
+            padding: 4px 10px;
             border-radius: 10px;
-            font-weight: 700;
-            font-size: 0.7rem;
+            font-weight: 800;
+            font-size: 0.8rem;
         }
         .badge-wait {
             background: rgba(100, 116, 139, 0.25);
             border: 1px solid #475569;
             color: #cbd5e1;
-            padding: 3px 8px;
+            padding: 4px 10px;
             border-radius: 10px;
-            font-weight: 700;
-            font-size: 0.7rem;
+            font-weight: 800;
+            font-size: 0.8rem;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -163,7 +192,7 @@ def blank_result(reason, state="WAIT"):
 
 def analyze_buyer_seller_story(completed):
     if completed is None or len(completed) < 3:
-        return {"control": "NEUTRAL", "story": "Accumulating initial candles."}
+        return {"control": "NEUTRAL", "story": "Accumulating candles."}
     tail = completed.tail(5).reset_index(drop=True)
     bullish = sum(tail.close > tail.open)
     bearish = sum(tail.close < tail.open)
@@ -243,7 +272,7 @@ def ghost_protocol(ticks, now=None):
             c1_time = pd.Timestamp(c1.datetime)
             entry_time = c1_time + timedelta(minutes=2)
             expiry_time = entry_time + timedelta(minutes=1)
-            seconds_to_boundary = max(0, int(60 - (now.timestamp() % 60)))
+            prep_seconds = max(0, int(60 - (now.timestamp() % 60)))
             
             if not c2_confirmed or not price_valid:
                 return {
@@ -255,7 +284,7 @@ def ghost_protocol(ticks, now=None):
                     "pattern": "Staircase Step",
                     "entry_time": entry_time.strftime("%H:%M:%S"),
                     "expiry_time": expiry_time.strftime("%H:%M:%S"),
-                    "countdown": seconds_to_boundary
+                    "prep_countdown": prep_seconds
                 }
                 
             return {
@@ -267,17 +296,17 @@ def ghost_protocol(ticks, now=None):
                 "pattern": "Three-Step Staircase",
                 "entry_time": entry_time.strftime("%H:%M:%S"),
                 "expiry_time": expiry_time.strftime("%H:%M:%S"),
-                "countdown": seconds_to_boundary
+                "prep_countdown": prep_seconds
             }
             
-    seconds_to_boundary = max(0, int(60 - (now.timestamp() % 60)))
+    prep_seconds = max(0, int(60 - (now.timestamp() % 60)))
     return {
         **base, 
         "state": "SETUP DEVELOPING", 
         "reason": "Analyzing staircase formation.",
         "entry_time": (now + timedelta(minutes=1)).strftime("%H:%M:%S"),
         "expiry_time": (now + timedelta(minutes=2)).strftime("%H:%M:%S"),
-        "countdown": seconds_to_boundary
+        "prep_countdown": prep_seconds
     }
 
 class DerivClient:
@@ -319,7 +348,6 @@ def main():
     if not STREAMLIT_AVAILABLE:
         return
 
-    # Auto-refresh every 3 seconds so feed updates dynamically
     if AUTOREFRESH_AVAILABLE:
         st_autorefresh(interval=3000, key="ghost_live_feed_ticker")
 
@@ -329,10 +357,12 @@ def main():
     <div class="term-header">
         <div>
             <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
-            <p class="term-sub">Volatility 100 (1s) Index • Local Time: {now_cat.strftime('%H:%M:%S')} (CAT)</p>
+            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • Auto Stream (3s)</span>
         </div>
-        <div>
-            <span style="font-size:0.7rem; color:#34d399; background:rgba(52,211,153,0.1); padding:4px 10px; border-radius:10px; border:1px solid rgba(52,211,153,0.3);">🟢 LIVE STREAM (AUTO 3S)</span>
+        <div style="display:flex; align-items:center; gap:10px;">
+            <div class="live-clock-pad">
+                ⏱️ {now_cat.strftime('%H:%M:%S')} <span style="font-size:0.65rem; color:#94a3b8;">CAT</span>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -347,7 +377,7 @@ def main():
     else:
         candles = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
 
-    left_col, right_col = st.columns([1.6, 1])
+    left_col, right_col = st.columns([1.55, 1])
 
     with left_col:
         st.markdown('<div class="term-card">', unsafe_allow_html=True)
@@ -364,7 +394,7 @@ def main():
                 decreasing_line_color='#ef4444'
             )])
             fig.update_layout(
-                height=390,
+                height=385,
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor="#0f172a",
                 plot_bgcolor="#0f172a",
@@ -387,26 +417,49 @@ def main():
         elif state == "MARKET UNCLEAR" or state == "INVALIDATED":
             badge_class = "badge-unclear"
 
-        countdown_val = analysis.get('countdown', 0)
-
         st.markdown(f"""
-        <div class="term-card" style="text-align: center; padding: 10px;">
+        <div class="term-card" style="text-align: center; padding: 8px;">
             <div class="card-label">Signal Pad & Decision State</div>
-            <div style="margin: 4px 0;">
+            <div style="margin: 3px 0;">
                 <span class="{badge_class}">{state} ({signal})</span>
             </div>
-            <div style="font-size: 1.3rem; font-weight: 800; color: #f8fafc; margin-top: 2px;">
-                {fmt_price(analysis.get('price', 0))} <span style="font-size:0.75rem; color:#34d399;">(Countdown: {countdown_val}s)</span>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #f8fafc; margin-top: 2px;">
+                {fmt_price(analysis.get('price', 0))}
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+        prep_sec = analysis.get('prep_countdown', 0)
+        t_col1, t_col2, t_col3 = st.columns(3)
+        
+        with t_col1:
+            st.markdown(f"""
+            <div class="big-time-pad">
+                <div class="big-time-lbl">Entry Time</div>
+                <div class="big-time-val" style="color: #38bdf8;">{analysis.get('entry_time', '--:--:--')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with t_col2:
+            st.markdown(f"""
+            <div class="big-time-pad">
+                <div class="big-time-lbl">Expiry Time</div>
+                <div class="big-time-val" style="color: #f43f5e;">{analysis.get('expiry_time', '--:--:--')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with t_col3:
+            st.markdown(f"""
+            <div class="big-time-pad" style="border-color: #34d399;">
+                <div class="big-time-lbl" style="color: #34d399;">Prep Time</div>
+                <div class="big-time-val" style="color: #34d399;">{prep_sec}s</div>
+            </div>
+            """, unsafe_allow_html=True)
+
         st.markdown(f"""
-        <div class="term-card">
-            <div class="card-label">Timing & Execution Details</div>
-            <div style="font-size: 0.75rem; color: #cbd5e1; margin-top: 2px; line-height: 1.3;">
-                <b>Entry Time:</b> <span style="color:#38bdf8;">{analysis.get('entry_time', '--:--:--')}</span> | <b>Expiry:</b> <span style="color:#f43f5e;">{analysis.get('expiry_time', '--:--:--')}</span><br>
-                <b>Reference (C1 Close):</b> {fmt_price(analysis.get('entry_point', 0))}<br>
+        <div class="term-card" style="margin-top: 4px;">
+            <div style="font-size: 0.72rem; color: #cbd5e1; line-height: 1.3;">
+                <b>C1 Ref Close:</b> {fmt_price(analysis.get('entry_point', 0))} | <b>Pattern:</b> {analysis.get('pattern', 'Scanning...')}<br>
                 <b>Reason:</b> {analysis.get('reason', '')}
             </div>
         </div>
@@ -416,24 +469,11 @@ def main():
         st.markdown(f"""
         <div class="term-card">
             <div class="card-label">🧠 Buyer / Seller Story</div>
-            <div style="font-size: 0.75rem; color: #34d399; font-weight: 700; margin-top: 2px;">
+            <div style="font-size: 0.75rem; color: #34d399; font-weight: 700;">
                 Control: {bs.get('control', 'Analyzing...')}
             </div>
-            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 1px;">
+            <div style="font-size: 0.7rem; color: #94a3b8;">
                 {bs.get('story', '')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        ms = analysis.get("market_structure", {})
-        st.markdown(f"""
-        <div class="term-card">
-            <div class="card-label">🏗️ Market Structure</div>
-            <div style="font-size: 0.75rem; color: #38bdf8; font-weight: 700; margin-top: 2px;">
-                Bias: {ms.get('trend', 'SIDEWAYS')}
-            </div>
-            <div style="font-size: 0.72rem; color: #94a3b8; margin-top: 1px;">
-                {ms.get('detail', '')}
             </div>
         </div>
         """, unsafe_allow_html=True)
