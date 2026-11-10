@@ -34,44 +34,46 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 3.2",
+    page_title="GHOST Protocol 4.0",
     page_icon="📡",
     layout="wide"
 )
 
 st.markdown("""
 <style>
-:root { color-scheme: dark; }
-.stApp { background: radial-gradient(ellipse at top, #17243a 0%, #0b1220 55%, #080d17 100%); }
-.block-container { max-width: 1180px; padding: 1.0rem 1.15rem 3rem; }
-[data-testid="stSidebar"] { background: #0d1727; }
-[data-testid="stMetric"] { background: #111d30; border: 1px solid #293b55; padding: 13px; border-radius: 13px; }
-[data-testid="stVerticalBlockBorderWrapper"] { border-color: #293b55 !important; border-radius: 14px; }
-.ghost-hero { background: linear-gradient(120deg,#101d31,#172b42 60%,#10251f); border:1px solid #35506a; border-radius:18px; padding:20px; margin: 8px 0 18px; }
-.ghost-kicker { color:#8da9c8; letter-spacing:2px; font-size:11px; font-weight:800; }
-.ghost-title { color:#f4f8ff; font-size:clamp(25px,4vw,38px); font-weight:900; margin:5px 0; }
-.ghost-sub { color:#9fb2ca; font-size:13px; }
-.signal-card { padding:18px 20px; border-radius:14px; background:#111d30; border:1px solid #334862; margin:8px 0; }
-.signal-call { border-left:6px solid #22c55e; }
-.signal-put { border-left:6px solid #ef4444; }
-.signal-wait { border-left:6px solid #64748b; }
-.small-muted { color:#9aacc2; font-size:.86rem; }
-section[data-testid="stMain"] { overflow-x:hidden; }
-[data-testid="stPlotlyChart"] { border:1px solid #263b54; border-radius:12px; overflow:hidden; }
-h1,h2,h3 { letter-spacing:-.02em; }
-@media (max-width: 700px) { .block-container { padding-left:.7rem; padding-right:.7rem; } [data-testid="stMetric"] { padding:9px; } }
+:root{color-scheme:dark}
+.stApp{background:radial-gradient(ellipse at 15% 0%,#182d59 0%,#10152e 42%,#080d1c 100%);color:#f4f7ff}
+.block-container{max-width:100%;padding:0.65rem 1.1rem 1rem}
+[data-testid="stSidebar"]{background:#0c1530;border-right:1px solid #263b72}
+[data-testid="stMetric"]{background:linear-gradient(145deg,#17264b,#171b3b);border:1px solid #344b88;padding:9px 12px;border-radius:13px;min-height:88px}
+[data-testid="stMetricLabel"]{color:#a9bce8!important;font-weight:800;letter-spacing:.08em}
+[data-testid="stMetricValue"]{color:#f6f8ff!important;font-weight:900}
+[data-testid="stVerticalBlockBorderWrapper"]{border-color:#33477d!important;border-radius:14px}
+.ghost-hero{background:linear-gradient(105deg,#142d61,#38236c 68%,#19254a);border:1px solid #637bd1;border-radius:16px;padding:13px 20px;margin:2px 0 12px;box-shadow:0 8px 28px #03081788}
+.ghost-kicker{color:#b7c9ff;letter-spacing:2.2px;font-size:10px;font-weight:900}
+.ghost-title{color:#fff;font-size:29px;font-weight:950;letter-spacing:.02em;margin:1px 0}
+.ghost-sub{color:#d0d9fa;font-size:12px}
+.signal-card{padding:9px 12px;border-radius:14px;background:linear-gradient(145deg,#17254b,#191c3c);border:1px solid #465a9a;margin:4px 0 10px}
+.signal-call{border-left:5px solid #45d7ff}.signal-put{border-left:5px solid #ff647f}.signal-wait{border-left:5px solid #8b91b9}
+.brain-card{background:linear-gradient(145deg,#141f40,#211b46);border:1px solid #354b86;border-radius:10px;padding:7px 10px;margin:3px 0}
+.brain-name{color:#b9caff;font-size:10px;font-weight:900;letter-spacing:1.2px}
+.brain-state{color:#fff;font-size:14px;font-weight:850;margin:3px 0}
+.brain-detail{color:#c0cbea;font-size:10px;line-height:1.35}
+.small-muted{color:#b3c0df;font-size:.78rem}
+h1,h2,h3{letter-spacing:-.02em;color:#f7f8ff}
+[data-testid="stPlotlyChart"]{border:1px solid #344a87;border-radius:14px;overflow:hidden;background:#0d1530}
+[data-testid="stMainBlockContainer"]{padding-top:.35rem}
+section[data-testid="stMain"]{overflow-x:hidden}
+div[data-testid="stHorizontalBlock"]{gap:1rem}
+.stButton>button{border-radius:11px;border:1px solid #657ce0;background:linear-gradient(90deg,#2859bc,#6536a5);color:white;font-weight:850;min-height:42px}
+.stButton>button:hover{border-color:#a8b8ff;color:white;box-shadow:0 0 14px #536be866}
+@media(max-width:900px){.block-container{padding:.5rem}.ghost-title{font-size:23px}}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero">
-  <div class="ghost-kicker">AUTONOMOUS MARKET INTELLIGENCE · MANUAL EXECUTION ONLY</div>
-  <div class="ghost-title">👻 GHOST PROTOCOL 3.2</div>
-  <div class="ghost-sub">Unified terminal · Deriv synthetic intelligence · Forex THREE STEPS · CAT</div>
-</div>
+<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.0</div><div class="ghost-sub">FOUR DECISION BRAINS · LIVE PRICE ACTION · CONFLUENCE SIGNAL TERMINAL</div></div>
 """, unsafe_allow_html=True)
-
-
 
 # ============================================================
 # SHARED HELPERS
@@ -267,6 +269,70 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
         "highs": hs,
         "lows": ls
     }
+
+
+# ============================================================
+# FOUR-BRAIN SIGNAL FUSION — ALL FOUR SYSTEMS VOTE
+# ============================================================
+def four_brain_decision(candles, staircase_result, strength=2, min_steps=3, pullback_pct=50):
+    """Fuse THREE STEPS, Candle Bible, Homma/Sakata and S/R into one transparent decision."""
+    base = dict(staircase_result or {})
+    if candles is None or len(candles) < 30:
+        base.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Collecting sufficient closed candles for all four intelligence brains.", "brains":{}})
+        return base
+    d=candles.copy().reset_index(drop=True)
+    three=three_steps(d, strength, min_steps, pullback_pct)
+    bible=candle_bible_analysis(d)
+    sakata=homma_sakata_analysis(d)
+    sr=support_resistance_analysis(d)
+    votes={"THREE STEPS":three.get("signal","WAIT"),"CANDLE BIBLE":"WAIT","HOMMA / SAKATA":"WAIT","SUPPORT / RESISTANCE":"WAIT"}
+    bb=str(bible.get("bias",""))
+    if "BULLISH" in bb: votes["CANDLE BIBLE"]="CALL"
+    elif "BEARISH" in bb: votes["CANDLE BIBLE"]="PUT"
+    obs=" ".join(sakata.get("observations",[])).upper()
+    if any(k in obs for k in ("BULLISH", "THREE RIVERS")): votes["HOMMA / SAKATA"]="CALL"
+    elif any(k in obs for k in ("BEARISH", "THREE MOUNTAINS")): votes["HOMMA / SAKATA"]="PUT"
+    # S/R only votes when price is close to a confirmed level AND the latest candle rejects it.
+    last=d.iloc[-1]; price=float(last.close); body=abs(float(last.close)-float(last.open)); span=max(float(last.high)-float(last.low),1e-12)
+    lower=float(min(last.open,last.close)-last.low); upper=float(last.high-max(last.open,last.close))
+    tol=max(abs(price)*0.0008, span*0.35)
+    support=sr.get("support"); resistance=sr.get("resistance")
+    near_support=support is not None and abs(price-float(support))<=tol
+    near_resistance=resistance is not None and abs(price-float(resistance))<=tol
+    if near_support and lower>max(body*1.15,span*.28) and float(last.close)>float(last.open): votes["SUPPORT / RESISTANCE"]="CALL"
+    elif near_resistance and upper>max(body*1.15,span*.28) and float(last.close)<float(last.open): votes["SUPPORT / RESISTANCE"]="PUT"
+    calls=sum(v=="CALL" for v in votes.values()); puts=sum(v=="PUT" for v in votes.values())
+    direction="CALL" if calls>=2 and calls-puts>=2 else "PUT" if puts>=2 and puts-calls>=2 else "WAIT"
+    # Stale feed and hard staircase invalidations remain hard safety blocks, not soft opinions.
+    hard_block=base.get("stage") in ("FEED CHECK","INVALIDATED")
+    if hard_block: direction="WAIT"
+    brains={
+      "THREE STEPS":{"vote":votes["THREE STEPS"],"detail":three.get("reason","No staircase alignment.")},
+      "CANDLE BIBLE":{"vote":votes["CANDLE BIBLE"],"detail":", ".join(bible.get("patterns",[]))},
+      "HOMMA / SAKATA":{"vote":votes["HOMMA / SAKATA"],"detail":", ".join(sakata.get("observations",[]))},
+      "SUPPORT / RESISTANCE":{"vote":votes["SUPPORT / RESISTANCE"],"detail":f"Support {fmt_price(support) if support is not None else '—'} · Resistance {fmt_price(resistance) if resistance is not None else '—'}"}
+    }
+    base.update({"signal":direction,"brains":brains,"brain_votes":{"CALL":calls,"PUT":puts},"candle_bible":bible,"sakata":sakata,"support_resistance":sr,"three_steps_result":three})
+    if direction in ("CALL","PUT") and not hard_block:
+        aligned=[name for name,v in votes.items() if v==direction]
+        opposing=[name for name,v in votes.items() if v in ("CALL","PUT") and v!=direction]
+        base["stage"]="ENTRY READY"
+        base["entry_time"]=now_cat().replace(second=0,microsecond=0)
+        base["price"]=price
+        base["entry_point"]=price
+        base["candle_time"]=d.datetime.iloc[-1]
+        base["reason"]=f"{calls if direction=='CALL' else puts}/4 intelligence brains align {direction}. Supporting systems: {', '.join(aligned)}." + (f" Conflicting: {', '.join(opposing)}." if opposing else " No opposing directional votes.")
+        base["supporting_brains"]=aligned
+    else:
+        base["signal"]="WAIT"
+        if hard_block: base["stage"]="FEED CHECK" if base.get("stage")=="FEED CHECK" else "INVALIDATED"
+        else:
+            base["stage"]="SETUP DEVELOPING" if staircase_result.get("stage")=="SETUP DEVELOPING" else "SCANNING"
+        if base["stage"] == "SETUP DEVELOPING":
+            base["reason"]="Neutral preparation only: Candle 2 is still forming. No directional signal is issued until the four-brain consensus is evaluated on completed evidence."
+        else:
+            base["reason"]=f"No qualified four-brain consensus. CALL {calls}/4 · PUT {puts}/4. Wait for alignment."
+    return base
 
 
 # ============================================================
@@ -962,7 +1028,7 @@ def candle_bible_analysis(candles):
         patterns.append("BEARISH MARUBOZU-LIKE CLOSE")
     bias = "BULLISH CONTEXT" if pc > .65 and c3 > o3 else "BEARISH CONTEXT" if pc < .35 and c3 < o3 else "MIXED / INDECISION"
     return {"patterns": patterns or ["NO HIGH-CONFIDENCE CLASSIC PATTERN"], "bias": bias,
-            "note": "Candlestick names are approximate OHLC pattern matches. They provide context only; the Three-Step Staircase remains the sole entry authority."}
+            "note": "Candlestick names are approximate OHLC pattern matches. Candle Bible is one of four independent voting brains; evidence must be reviewed in context."}
 
 
 def homma_sakata_analysis(candles):
@@ -1024,7 +1090,7 @@ def homma_sakata_analysis(candles):
                 obs.append("THREE GAPS DOWN — RARE EXHAUSTION-RISK CANDIDATE; VERIFY CONTEXT")
     return {"observations": obs or ["No confirmed Sakata formation in the available sample"],
             "state": "PATTERN CONTEXT ONLY",
-            "note": "Sakata labels are conservative OHLC candidates. Gaps and parallel-line formations are uncommon in continuous synthetic markets; none is an entry trigger. Three-Step Staircase remains the only entry authority."}
+            "note": "Sakata labels are conservative OHLC candidates. Gaps and parallel-line formations are uncommon in continuous synthetic markets; Sakata contributes a vote but is never treated as proof."}
 
 
 def support_resistance_analysis(candles, lookback=80):
@@ -1040,7 +1106,7 @@ def support_resistance_analysis(candles, lookback=80):
 
 
 def ghost_protocol(ticks):
-    """Three-Step Staircase: C1 setup, C2 completed close, C3 only entry window."""
+    """Evaluate the Three-Step sequence as one independent intelligence input."""
     if ticks is None or ticks.empty:
         return {"signal": "WAIT", "stage": "FEED CHECK", "reason": "Waiting for Deriv tick data."}
 
@@ -1208,23 +1274,29 @@ def show_signal_pad(signal):
 # CHARTS
 # ============================================================
 
-def chart(df, title):
-    view = df.tail(100)
-    fig = go.Figure(
-        go.Candlestick(
-            x=view.datetime,
-            open=view.open,
-            high=view.high,
-            low=view.low,
-            close=view.close,
-            name="1m"
-        )
-    )
+def chart(df, title, levels=None):
+    view = df.tail(110).copy()
+    fig = go.Figure(go.Candlestick(
+        x=view.datetime, open=view.open, high=view.high, low=view.low, close=view.close,
+        name="LIVE 1M", increasing=dict(line=dict(color="#42d7ff",width=1),fillcolor="#42d7ff"),
+        decreasing=dict(line=dict(color="#ff5f83",width=1),fillcolor="#ff5f83")
+    ))
+    if levels:
+        support=levels.get("support") if isinstance(levels,dict) else None
+        resistance=levels.get("resistance") if isinstance(levels,dict) else None
+        if support is not None:
+            fig.add_hline(y=float(support),line_dash="dot",line_color="#49d5ff",line_width=1.4,annotation_text="SUPPORT",annotation_position="bottom right")
+        if resistance is not None:
+            fig.add_hline(y=float(resistance),line_dash="dot",line_color="#b78aff",line_width=1.4,annotation_text="RESISTANCE",annotation_position="top right")
     fig.update_layout(
-        title=title,
-        height=380,
+        title=dict(text=title,font=dict(size=15,color="#edf2ff")),
+        height=430, paper_bgcolor="#0c1430", plot_bgcolor="#0c1430",
+        font=dict(color="#c6d2f2",family="Arial"),
         xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=40, b=10)
+        margin=dict(l=8,r=8,t=42,b=8),
+        xaxis=dict(showgrid=True,gridcolor="#1d2b50",zerolinecolor="#263963",rangeslider=dict(visible=False)),
+        yaxis=dict(showgrid=True,gridcolor="#1d2b50",side="right",zerolinecolor="#263963"),
+        showlegend=False
     )
     return fig
 
@@ -1373,6 +1445,7 @@ if run_scan:
                     result = three_steps(
                         df, pivot_strength, min_steps, pullback_pct
                     )
+                    result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct)
                     output.append({
                         "instrument": pair,
                         "df": df,
@@ -1401,7 +1474,7 @@ if run_scan:
                     key=lambda item: item["result"]["candle_time"]
                 )
                 st.session_state["active_signal"] = build_signal_record(
-                    "THREE STEPS",
+                    "GHOST FOUR-BRAIN FOREX",
                     chosen["instrument"],
                     chosen["result"],
                     expiry
@@ -1439,6 +1512,10 @@ if run_scan:
                     raise RuntimeError("Deriv stream is starting; waiting for sufficient initial tick history.")
                 result = ghost_protocol(ticks)
                 candles = merge_candle_history(ticks_to_candles(ticks), st.session_state.get("deriv_historical_candles"))
+                closed_brain_candles = candles.copy()
+                closed_brain_candles["datetime"] = pd.to_datetime(closed_brain_candles["datetime"], utc=True)
+                closed_brain_candles = closed_brain_candles[closed_brain_candles.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
+                result = four_brain_decision(closed_brain_candles, result)
 
             st.session_state["deriv_output"] = {
                 "instrument": GHOST_NAME, "symbol": GHOST_SYMBOL,
@@ -1470,10 +1547,8 @@ if run_scan:
 
 
 # ============================================================
-# SIGNAL PAD
+# UNIFIED LAPTOP TERMINAL — CHART LEFT / DECISION DESK RIGHT
 # ============================================================
-
-st.subheader("01 · SIGNAL COMMAND CENTRE")
 active_signal = st.session_state.get("active_signal")
 if active_signal:
     try:
@@ -1483,209 +1558,85 @@ if active_signal:
     except Exception:
         st.session_state.pop("active_signal", None)
         active_signal = None
-show_signal_pad(active_signal)
 
+left, right = st.columns([1.55, 1.0], gap="medium")
 
-# ============================================================
-# FOREX DASHBOARD
-# ============================================================
+def render_brains(brains):
+    st.markdown("**INTELLIGENCE BEHIND THIS DECISION**")
+    if not brains:
+        st.markdown('<div class="brain-card"><div class="brain-name">FOUR-BRAIN FUSION</div><div class="brain-state">COLLECTING MARKET DATA</div><div class="brain-detail">No system is being credited with a signal until its evidence is available.</div></div>',unsafe_allow_html=True)
+        return
+    for name, item in brains.items():
+        vote=item.get("vote","WAIT")
+        color="#55dcff" if vote=="CALL" else "#ff718e" if vote=="PUT" else "#b4c1e8"
+        detail=str(item.get("detail","—"))
+        st.markdown(f'<div class="brain-card"><div class="brain-name">{name}</div><div class="brain-state" style="color:{color}">{vote}</div><div class="brain-detail">{detail[:210]}</div></div>',unsafe_allow_html=True)
 
-if market.startswith("Pocket"):
-    st.subheader("02 · FOREX THREE-STEP SCANNER")
-
-    results = (
-        st.session_state.get("scan_output", [])
-        if st.session_state.get("scan_market") == "forex"
-        else []
-    )
-
-    if not results:
-        st.caption(
-            "Select Forex pairs and press SCAN FOREX. "
-            "Only completed one-minute candles are analysed."
-        )
-
-    for item in results:
-        with st.container(border=True):
-            if "error" in item:
-                st.error(f'{item["instrument"]}: {item["error"]}')
-                continue
-
-            result = item["result"]
-            col1, col2, col3 = st.columns([2, 1, 3])
-            col1.markdown(f'**{item["instrument"]}**')
-            col2.metric("Signal", result["signal"])
-            col3.write(result["reason"])
-
-            with st.expander("Chart & details"):
-                st.plotly_chart(
-                    chart(item["df"], item["instrument"]),
-                    use_container_width=True
-                )
-                if "price" in result:
-                    st.write(
-                        f'Last completed close: {fmt_price(result["price"])} · '
-                        f'EMA 9: {fmt_price(result["ema9"])} · '
-                        f'EMA 21: {fmt_price(result["ema21"])}'
-                    )
-
-
-# ============================================================
-# GHOST DASHBOARD
-# ============================================================
-
-else:
-    st.subheader("02 · DERIV GHOST INTELLIGENCE")
-
-    output = (
-        st.session_state.get("deriv_output")
-        if st.session_state.get("scan_market") == "deriv"
-        else None
-    )
-
-    if output:
-        latest_tick_time = (
-            output["ticks"].datetime.iloc[-1]
-            if output.get("ticks") is not None and not output["ticks"].empty
-            else None
-        )
-        result = output["result"]
-        stage = result.get("stage", "SCANNING")
-        direction = result.get("signal", "WAIT")
-        fs = output.get("feed_status", {})
-        feed_age = fs.get("last_tick_age")
-        feed_label = "CONNECTED" if fs.get("connected") and feed_age is not None and feed_age <= 8 else "RECONNECTING / DELAYED"
-        st.caption(f"DERIV STREAM · {feed_label} · last tick age: {feed_age:.1f}s" if feed_age is not None else f"DERIV STREAM · {feed_label}")
-        if fs.get("last_error"):
-            st.caption("Stream diagnostic: " + str(fs["last_error"]))
-
-        st.markdown("### The three-candle sequence")
-        a, b, c = st.columns(3)
-        a.metric("CANDLE 1", "IDENTIFY")
-        b.metric("CANDLE 2", "CLOSE CONFIRMATION")
-        c.metric("CANDLE 3", "ENTRY")
-
-        st.markdown(f"**Current stage: {stage}**")
-        st.write(result.get("reason", "Waiting for a valid setup."))
-
-        # Buyer/seller candle story: OHLC-derived pressure, not real order flow.
-        st.markdown("### BUYER / SELLER STORY ENGINE")
-        story_candles = output.get("candles")
-        if story_candles is not None and len(story_candles) >= 5:
-            closed_story = story_candles.copy()
-            closed_story["datetime"] = pd.to_datetime(closed_story["datetime"], utc=True)
-            closed_story = closed_story[closed_story.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].tail(8)
-            if not closed_story.empty:
-                green = int((closed_story.close > closed_story.open).sum())
-                red = int((closed_story.close < closed_story.open).sum())
-                overlap = float((closed_story.high - closed_story.low).tail(5).mean())
-                net = float(closed_story.close.iloc[-1] - closed_story.open.iloc[0])
-                story = "BUYERS DOMINANT" if green >= 6 and net > 0 else "SELLERS DOMINANT" if red >= 6 and net < 0 else "MIXED / CONTESTED"
-                st.write(f"**{story}** · {green} bullish closes / {red} bearish closes across the last {len(closed_story)} completed candles.")
-                st.caption("This is candle-derived pressure only. It is not exchange order flow or buyer/seller volume.")
-            else:
-                st.caption("Collecting completed candles for buyer/seller story.")
-        structure = result.get("market_structure")
-        if structure:
-            st.markdown("**GHOST market structure**")
-            st.info(
-                f'{structure.get("label", "ASSESSING")} — '
-                f'{structure.get("detail", "")}\n\n'
-                f'Swing sequence: {structure.get("swing_structure", "COLLECTING")}'
-            )
-
-        st.markdown("**Multi-Timeframe Session & Volatility Intelligence**")
-        mtf = session_intelligence(output.get("ticks"), output.get("candles"), output.get("mtf_history"))
-        mtf_cols = st.columns(4)
-        for col, tf in zip(mtf_cols, ("15m", "1h", "4h", "1d")):
-            item = mtf.get(tf, {})
-            col.metric(tf, item.get("state", "COLLECTING"),
-                       delta=(f'{item.get("trend", "MIXED")} · {item["ratio"]:.2f}× range' if item.get("ratio") is not None else item.get("trend")))
-        mtf_errors = output.get("mtf_errors", {})
-        if mtf_errors:
-            st.caption("Some higher-timeframe history is still collecting: " + " · ".join(f"{k}: {v}" for k, v in mtf_errors.items()))
-        activity = mtf.get("tick_activity")
-        if activity:
-            st.caption(f'Tick activity proxy: {activity["recent_per_min"]:.1f} ticks/min vs {activity["baseline_per_min"]:.1f} baseline · {activity["state"]}. This is tick frequency, NOT traded volume.')
-        st.markdown("### CANDLE BIBLE · CANDLESTICK INTELLIGENCE")
-        completed_for_context = output.get("candles").copy()
-        if completed_for_context is not None and not completed_for_context.empty:
-            completed_for_context["datetime"] = pd.to_datetime(completed_for_context["datetime"], utc=True)
-            completed_for_context = completed_for_context[completed_for_context.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
-        bible = candle_bible_analysis(completed_for_context)
-        st.write(f"**{bible['bias']}** · " + " · ".join(bible["patterns"]))
-        st.caption(bible["note"])
-
-        st.markdown("### HOMMA / SAKATA · CLASSICAL PATTERN CONTEXT")
-        sakata = homma_sakata_analysis(completed_for_context)
-        for observation in sakata["observations"]:
-            st.write("• " + observation)
-        st.caption(sakata["note"])
-
-        st.markdown("### SUPPORT / RESISTANCE MAP")
-        sr = support_resistance_analysis(completed_for_context)
-        sr_a, sr_b = st.columns(2)
-        sr_a.metric("NEAREST SUPPORT", fmt_price(sr.get("support")) if sr.get("support") is not None else "COLLECTING")
-        sr_b.metric("NEAREST RESISTANCE", fmt_price(sr.get("resistance")) if sr.get("resistance") is not None else "COLLECTING")
-        st.caption(sr["note"])
-
-        if stage == "SETUP DEVELOPING":
-            st.info("SETUP DEVELOPING — Candle 2 is still open. Its close must confirm; no directional signal is issued yet.")
-        elif stage == "ENTRY READY":
-            action = "RISE / CALL" if direction == "CALL" else "FALL / PUT"
-            st.success(
-                f"CANDLE 2 CONFIRMED — CANDLE 3 ENTRY: {action}. "
-                "This is a manual alert, not an automatic trade."
-            )
-        elif stage == "CAUTION":
-            st.warning(
-                f"CAUTION {direction} — staircase rules are still valid, "
-                "but opposing candle behaviour or nearby structure was detected. "
-                "This is NOT an ENTRY READY signal. Do not treat it as an automatic entry."
-            )
-            for warning in result.get("warnings", []):
-                st.write(f"• {warning}")
-        elif stage == "INVALIDATED":
-            st.error("SETUP INVALIDATED — DO NOT ENTER.")
-        elif stage == "CANDLE 2 WAITING":
-            st.info("Candle 1 identified. Waiting for Candle 2 to cross its close.")
+with left:
+    if market.startswith("Pocket"):
+        st.markdown("### <span style='color:#8cbaff'>01</span> · LIVE FOREX PRICE ACTION",unsafe_allow_html=True)
+        results=st.session_state.get("scan_output",[]) if st.session_state.get("scan_market")=="forex" else []
+        valid=[x for x in results if "error" not in x and x.get("df") is not None and not x["df"].empty]
+        if valid:
+            names=[x["instrument"] for x in valid]
+            selected_name=st.selectbox("CHART INSTRUMENT",names,label_visibility="collapsed",key="brain_selected_pair")
+            selected=next(x for x in valid if x["instrument"]==selected_name)
+            st.plotly_chart(chart(selected["df"],selected_name+" · 1 MINUTE",selected["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
+            res=selected["result"]
+            p1,p2,p3=st.columns(3)
+            p1.metric("LAST PRICE",fmt_price(res.get("price")))
+            p2.metric("EMA 9",fmt_price(res.get("ema9")))
+            p3.metric("EMA 21",fmt_price(res.get("ema21")))
+            st.caption("Forex candles are completed 1-minute Twelve Data observations. API limits and feed delay apply.")
         else:
-            st.info("SCANNING — waiting for a valid three-step staircase.")
-
-        tick_age = result.get("tick_age")
-        candle_age = result.get("candle_age")
-        detail_parts = []
-        if tick_age is not None:
-            detail_parts.append(f"Tick age: {tick_age:.1f}s")
-        if candle_age is not None:
-            detail_parts.append(f"Current candle age: {candle_age:.1f}s")
-        if detail_parts:
-            st.caption(" · ".join(detail_parts))
-
-        with st.expander("GHOST live chart and setup details", expanded=True):
-            st.plotly_chart(
-                chart(output["candles"], GHOST_NAME + " · 1-minute candles"),
-                use_container_width=True
-            )
-            latest_price = result.get("price")
-            st.write(f"Latest price: {fmt_price(latest_price)}")
-            st.write(f"Pattern: {result.get('pattern', 'Not identified')}")
-            st.write(f"Entry reference (Candle 1 close): {fmt_price(result.get('entry_point'))}")
-            if result.get("candle2_close") is not None:
-                st.write(f"Candle 2 close: {fmt_price(result.get('candle2_close'))}")
-
-        last_scan = output.get("last_scan")
-        if last_scan:
-            st.caption(
-                "Last successful Deriv scan (CAT): "
-                + datetime.fromisoformat(last_scan).strftime("%Y-%m-%d %H:%M:%S")
-            )
+            st.markdown('<div class="signal-card signal-wait"><h3>FOREX CHART STANDBY</h3><div class="small-muted">Select pairs and scan from the left control rail. Your chart will appear here.</div></div>',unsafe_allow_html=True)
+            for item in results:
+                if "error" in item: st.error(f'{item["instrument"]}: {item["error"]}')
     else:
-        st.info("GHOST is standing by. Connect and scan to load live Deriv market data. No signal timer is shown while waiting.")
-        last_error = st.session_state.get("deriv_scan_error")
-        if last_error:
-            st.warning(f"Most recent Deriv scan error: {last_error}")
+        st.markdown("### <span style='color:#8cbaff'>01</span> · LIVE SYNTHETIC CANDLE CHART",unsafe_allow_html=True)
+        output=st.session_state.get("deriv_output") if st.session_state.get("scan_market")=="deriv" else None
+        if output and output.get("candles") is not None and not output["candles"].empty:
+            st.plotly_chart(chart(output["candles"],GHOST_NAME+" · LIVE 1 MINUTE",output["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
+            result=output["result"]; fs=output.get("feed_status",{}); age=fs.get("last_tick_age")
+            feed_ok=fs.get("connected") and age is not None and age<=8
+            st.markdown(f'<div class="brain-card"><span class="brain-name">LIVE FEED</span><div class="brain-state" style="color:{"#55dcff" if feed_ok else "#ff718e"}">{"CONNECTED" if feed_ok else "RECONNECTING / DELAYED"}</div><div class="brain-detail">Last tick age: {f"{age:.1f}s" if age is not None else "unknown"} · Symbol: {output.get("symbol",GHOST_SYMBOL)}</div></div>',unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="signal-card signal-wait"><h3>DERIV CHART STANDBY</h3><div class="small-muted">Connect and scan GHOST to load the live public tick stream and one-minute candles.</div></div>',unsafe_allow_html=True)
 
+with right:
+    st.markdown("### <span style='color:#c5a5ff'>02</span> · SIGNAL COMMAND DECK",unsafe_allow_html=True)
+    show_signal_pad(active_signal)
+    if market.startswith("Pocket"):
+        results=st.session_state.get("scan_output",[]) if st.session_state.get("scan_market")=="forex" else []
+        valid=[x for x in results if "error" not in x]
+        if valid:
+            names=[x["instrument"] for x in valid]
+            chosen_name=st.session_state.get("brain_selected_pair",names[0])
+            if chosen_name not in names: chosen_name=names[0]
+            chosen=next(x for x in valid if x["instrument"]==chosen_name)
+            st.markdown(f"**{chosen_name} · FOUR-BRAIN STATUS**")
+            st.metric("CONSENSUS DECISION",chosen["result"].get("signal","WAIT"),delta=f'CALL {chosen["result"].get("brain_votes",{}).get("CALL",0)}/4 · PUT {chosen["result"].get("brain_votes",{}).get("PUT",0)}/4')
+            render_brains(chosen["result"].get("brains",{}))
+            st.caption(chosen["result"].get("reason","Waiting for confluence."))
+        else:
+            render_brains({})
+    else:
+        output=st.session_state.get("deriv_output") if st.session_state.get("scan_market")=="deriv" else None
+        if output:
+            result=output["result"]; votes=result.get("brain_votes",{})
+            st.metric("FOUR-BRAIN DECISION",result.get("signal","WAIT"),delta=f'CALL {votes.get("CALL",0)}/4 · PUT {votes.get("PUT",0)}/4')
+            render_brains(result.get("brains",{}))
+            st.caption(result.get("reason","Waiting for confluence."))
+            mtf=session_intelligence(output.get("ticks"),output.get("candles"),output.get("mtf_history"))
+            st.markdown("**HIGHER-TIMEFRAME CONTEXT**")
+            cols=st.columns(4)
+            for col,tf in zip(cols,("15m","1h","4h","1d")):
+                v=mtf.get(tf,{})
+                col.metric(tf,v.get("trend","—"),delta=v.get("state","COLLECTING"))
+        else:
+            render_brains({})
+
+st.markdown('<div class="small-muted" style="text-align:center;padding:5px">BLUE = bullish evidence · RED = bearish evidence · PURPLE = intelligence layer · WHITE = final decision · No consensus means WAIT.</div>',unsafe_allow_html=True)
 
 # ============================================================
 # FOOTER
