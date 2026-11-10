@@ -1,5 +1,3 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Enlarged Timing Pads & Prep Timer)
-
 import os
 import json
 import time
