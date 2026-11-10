@@ -34,190 +34,43 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 3.0",
+    page_title="GHOST Protocol 3.2",
     page_icon="📡",
     layout="wide"
 )
 
 st.markdown("""
 <style>
-.block-container {
-    padding-top: 1.2rem;
-    padding-bottom: 2rem;
-    max-width: 1450px;
-}
-[data-testid="stMetric"] {
-    background: #111827;
-    padding: 14px;
-    border-radius: 12px;
-    border: 1px solid #263244;
-}
-.signal-card {
-    padding: 18px 20px;
-    border-radius: 14px;
-    background: #111827;
-    border: 1px solid #334155;
-    margin: 8px 0;
-}
-.signal-call { border-left: 6px solid #16a34a; }
-.signal-put { border-left: 6px solid #dc2626; }
-.signal-wait { border-left: 6px solid #64748b; }
-.small-muted {
-    color: #94a3b8;
-    font-size: 0.86rem;
-}
+:root { color-scheme: dark; }
+.stApp { background: radial-gradient(ellipse at top, #17243a 0%, #0b1220 55%, #080d17 100%); }
+.block-container { max-width: 1180px; padding: 1.0rem 1.15rem 3rem; }
+[data-testid="stSidebar"] { background: #0d1727; }
+[data-testid="stMetric"] { background: #111d30; border: 1px solid #293b55; padding: 13px; border-radius: 13px; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-color: #293b55 !important; border-radius: 14px; }
+.ghost-hero { background: linear-gradient(120deg,#101d31,#172b42 60%,#10251f); border:1px solid #35506a; border-radius:18px; padding:20px; margin: 8px 0 18px; }
+.ghost-kicker { color:#8da9c8; letter-spacing:2px; font-size:11px; font-weight:800; }
+.ghost-title { color:#f4f8ff; font-size:clamp(25px,4vw,38px); font-weight:900; margin:5px 0; }
+.ghost-sub { color:#9fb2ca; font-size:13px; }
+.signal-card { padding:18px 20px; border-radius:14px; background:#111d30; border:1px solid #334862; margin:8px 0; }
+.signal-call { border-left:6px solid #22c55e; }
+.signal-put { border-left:6px solid #ef4444; }
+.signal-wait { border-left:6px solid #64748b; }
+.small-muted { color:#9aacc2; font-size:.86rem; }
+section[data-testid="stMain"] { overflow-x:hidden; }
+[data-testid="stPlotlyChart"] { border:1px solid #263b54; border-radius:12px; overflow:hidden; }
+h1,h2,h3 { letter-spacing:-.02em; }
+@media (max-width: 700px) { .block-container { padding-left:.7rem; padding-right:.7rem; } [data-testid="stMetric"] { padding:9px; } }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("👻 GHOST PROTOCOL 3.0")
-st.caption(
-    "Merged intelligence edition · Deriv live market data · Forex THREE STEPS · CAT"
-)
+st.markdown("""
+<div class="ghost-hero">
+  <div class="ghost-kicker">AUTONOMOUS MARKET INTELLIGENCE · MANUAL EXECUTION ONLY</div>
+  <div class="ghost-title">👻 GHOST PROTOCOL 3.2</div>
+  <div class="ghost-sub">Unified terminal · Deriv synthetic intelligence · Forex THREE STEPS · CAT</div>
+</div>
+""", unsafe_allow_html=True)
 
-
-
-def render_ghost_candle_clock(latest_tick=None):
-    """
-    Render a browser-side UTC minute clock. Its digits update every 100 ms,
-    independently of Streamlit reruns. Candle boundaries follow UTC minute
-    boundaries, matching the app's 1-minute tick resampling.
-    """
-    now_epoch = time.time()
-    tick_epoch = None
-    if latest_tick is not None:
-        try:
-            tick_epoch = pd.Timestamp(latest_tick).timestamp()
-        except Exception:
-            tick_epoch = None
-
-    if tick_epoch is not None:
-        candle_start = int(tick_epoch // 60) * 60
-        feed_age = max(0.0, now_epoch - tick_epoch)
-        # Only trust the feed's candle anchor while the latest tick is fresh.
-        if feed_age <= 8:
-            target_epoch = candle_start + 60
-            clock_source = "DERIV TICK TIMESTAMP"
-            feed_state = "LIVE FEED"
-        else:
-            target_epoch = int(now_epoch // 60) * 60 + 60
-            clock_source = "LOCAL UTC FALLBACK"
-            feed_state = f"FEED DELAYED · LAST TICK {feed_age:.1f}s AGO"
-    else:
-        target_epoch = int(now_epoch // 60) * 60 + 60
-        clock_source = "UTC CLOCK · WAITING FOR DERIV TICKS"
-        feed_state = "WAITING FOR LIVE FEED"
-
-    html = f"""
-    <div id="ghost-clock" style="font-family:Arial,sans-serif;background:#101827;
-        color:#f8fafc;border:1px solid #334155;border-radius:16px;padding:18px 16px;
-        text-align:center;">
-      <div style="font-size:12px;letter-spacing:2px;color:#9ca3af;font-weight:700;">
-        GHOST · LIVE CANDLE CLOCK
-      </div>
-      <div id="ghost-time" style="font-size:clamp(54px,10vw,82px);line-height:1.12;
-          font-weight:800;font-variant-numeric:tabular-nums;color:#34d399;margin:8px 0;">
-        00:00
-      </div>
-      <div id="ghost-label" style="font-size:14px;color:#cbd5e1;">
-        seconds until the next 1-minute candle
-      </div>
-      <div style="display:flex;justify-content:center;gap:10px;align-items:center;
-          flex-wrap:wrap;margin-top:14px;">
-        <span id="ghost-feed" style="font-size:11px;color:#a7f3d0;
-          border:1px solid #365b51;border-radius:20px;padding:5px 9px;">
-          {feed_state}
-        </span>
-        <button id="ghost-sound" type="button" style="border:1px solid #64748b;
-          background:#263449;color:#fff;border-radius:20px;padding:7px 12px;
-          font-size:12px;font-weight:700;">
-          🔔 ENABLE SOUND
-        </button>
-      </div>
-      <div style="font-size:11px;color:#94a3b8;margin-top:10px;">
-        {clock_source} · Alerts at 10 seconds and candle change
-      </div>
-    </div>
-    <script>
-    (() => {{
-      const targetAtLoad = {target_epoch * 1000};
-      const serverAtLoad = {now_epoch * 1000};
-      const clientAtLoad = Date.now();
-      const targetClient = targetAtLoad + (clientAtLoad - serverAtLoad);
-      const feedEl = document.getElementById("ghost-feed");
-      const timeEl = document.getElementById("ghost-time");
-      const labelEl = document.getElementById("ghost-label");
-      const soundBtn = document.getElementById("ghost-sound");
-      const storageKey = "ghost_candle_sound_enabled";
-      let enabled = false;
-      try {{ enabled = localStorage.getItem(storageKey) === "yes"; }} catch(e) {{}}
-      soundBtn.textContent = enabled ? "🔔 SOUND ON" : "🔔 ENABLE SOUND";
-
-      let audioCtx = null;
-      function beep(freq, duration) {{
-        if (!enabled || !audioCtx) return;
-        try {{
-          const osc = audioCtx.createOscillator();
-          const gain = audioCtx.createGain();
-          osc.type = "sine";
-          osc.frequency.value = freq;
-          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.16, audioCtx.currentTime + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
-          osc.connect(gain); gain.connect(audioCtx.destination);
-          osc.start(); osc.stop(audioCtx.currentTime + duration + 0.03);
-        }} catch(e) {{}}
-      }}
-      soundBtn.addEventListener("click", () => {{
-        enabled = !enabled;
-        try {{ localStorage.setItem(storageKey, enabled ? "yes" : "no"); }} catch(e) {{}}
-        if (enabled) {{
-          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-          if (AudioContextClass) {{
-            audioCtx = new AudioContextClass();
-            if (audioCtx.state === "suspended") audioCtx.resume();
-            beep(880, 0.12);
-          }}
-          soundBtn.textContent = "🔔 SOUND ON";
-        }} else {{
-          soundBtn.textContent = "🔔 ENABLE SOUND";
-        }}
-      }});
-
-      const minuteKey = "ghost_last_candle_alert";
-      let lastTenKey = "";
-      let lastBoundaryKey = "";
-      function updateClock() {{
-        const now = Date.now();
-        const remainingMs = targetClient - now;
-        const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
-        const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
-        const ss = String(remaining % 60).padStart(2, "0");
-        timeEl.textContent = mm + ":" + ss;
-        labelEl.textContent = remaining > 0
-          ? "seconds until the next 1-minute candle"
-          : "new candle boundary reached";
-        timeEl.style.color = remaining <= 10 ? "#fbbf24" : "#34d399";
-
-        const thisMinute = Math.floor(now / 60000);
-        const tenKey = String(thisMinute) + ":10";
-        if (remaining === 10 && lastTenKey !== tenKey) {{
-          lastTenKey = tenKey;
-          beep(660, 0.18);
-        }}
-        if (remaining === 0) {{
-          const boundaryKey = String(Math.floor(targetClient / 60000));
-          if (lastBoundaryKey !== boundaryKey) {{
-            lastBoundaryKey = boundaryKey;
-            beep(990, 0.28);
-          }}
-        }}
-      }}
-      updateClock();
-      setInterval(updateClock, 100);
-    }})();
-    </script>
-    """
-    components.html(html, height=225, scrolling=False)
 
 
 # ============================================================
@@ -490,6 +343,114 @@ class DerivClient:
         self.close()
 
 
+class DerivLiveFeed:
+    """Persistent public Deriv tick subscription with bounded history and reconnects."""
+    def __init__(self, symbol, seed_ticks=None, max_ticks=30000):
+        if websocket is None:
+            raise RuntimeError("websocket-client is required for the live Deriv feed.")
+        from collections import deque
+        import threading
+        self.symbol = symbol
+        self.max_ticks = max_ticks
+        self._ticks = deque(maxlen=max_ticks)
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._app = None
+        self._connected = False
+        self._last_message = None
+        self._last_error = None
+        self._reconnects = 0
+        if seed_ticks is not None and not seed_ticks.empty:
+            for row in seed_ticks[["datetime", "close"]].itertuples(index=False):
+                self._ticks.append({"datetime": pd.Timestamp(row.datetime), "close": float(row.close)})
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return self
+        import threading
+        self._thread = threading.Thread(target=self._run, name=f"DerivFeed-{self.symbol}", daemon=True)
+        self._thread.start()
+        return self
+
+    def _on_open(self, ws):
+        self._connected = True
+        self._last_error = None
+        ws.send(json.dumps({"ticks": self.symbol, "subscribe": 1}))
+
+    def _on_message(self, ws, raw):
+        try:
+            msg = json.loads(raw)
+            if msg.get("error"):
+                self._last_error = msg["error"].get("message", "Deriv stream error")
+                return
+            tick = msg.get("tick")
+            if not tick:
+                return
+            epoch = tick.get("epoch")
+            quote = tick.get("quote")
+            if epoch is None or quote is None:
+                return
+            item = {"datetime": pd.to_datetime(int(epoch), unit="s", utc=True), "close": float(quote)}
+            with self._lock:
+                # Ignore duplicate/out-of-order tick events, but retain same-second distinct quotes.
+                if self._ticks and item["datetime"] < self._ticks[-1]["datetime"]:
+                    return
+                if self._ticks and item["datetime"] == self._ticks[-1]["datetime"] and item["close"] == self._ticks[-1]["close"]:
+                    return
+                self._ticks.append(item)
+            self._last_message = time.time()
+        except Exception as exc:
+            self._last_error = f"Could not parse Deriv tick: {exc}"
+
+    def _on_error(self, ws, error):
+        self._connected = False
+        self._last_error = str(error)
+
+    def _on_close(self, ws, code, message):
+        self._connected = False
+
+    def _run(self):
+        delay = 1.0
+        while not self._stop.is_set():
+            try:
+                self._app = websocket.WebSocketApp(
+                    DERIV_PUBLIC_WS,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self._app.run_forever(ping_interval=25, ping_timeout=10)
+            except Exception as exc:
+                self._last_error = str(exc)
+            self._connected = False
+            if self._stop.is_set():
+                break
+            self._reconnects += 1
+            self._stop.wait(delay)
+            delay = min(delay * 1.7, 30.0)
+
+    def snapshot(self):
+        with self._lock:
+            rows = list(self._ticks)
+        return pd.DataFrame(rows, columns=["datetime", "close"])
+
+    def status(self):
+        age = None if self._last_message is None else max(0.0, time.time() - self._last_message)
+        return {"connected": self._connected, "last_tick_age": age, "last_error": self._last_error, "reconnects": self._reconnects}
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._app is not None:
+                self._app.close()
+        except Exception:
+            pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+
+
 # ============================================================
 # DERIV SYMBOL DISCOVERY AND TICK HISTORY
 # ============================================================
@@ -518,6 +479,54 @@ def deriv_symbols(client):
             normalized.append(row)
 
     return normalized
+
+
+def fetch_deriv_candle_history(symbol, count=5000, client=None, granularity=60):
+    """Fetch historical completed 1-minute OHLC candles for deep MTF context."""
+    if client is None:
+        with DerivClient(timeout=25) as temporary:
+            return fetch_deriv_candle_history(symbol, count, temporary, granularity)
+    data = client.request({
+        "ticks_history": symbol,
+        "adjust_start_time": 1,
+        "count": min(int(count), 5000),
+        "end": "latest",
+        "style": "candles",
+        "granularity": int(granularity)
+    })
+    rows = data.get("candles", [])
+    if not rows:
+        raise RuntimeError("Deriv returned no historical 1-minute candles.")
+    frame = pd.DataFrame(rows)
+    frame["datetime"] = pd.to_datetime(frame["epoch"], unit="s", utc=True, errors="coerce")
+    for col in ("open", "high", "low", "close"):
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame.dropna(subset=["datetime", "open", "high", "low", "close"])
+    return frame[["datetime", "open", "high", "low", "close"]].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
+
+
+def fetch_deriv_mtf_history(symbol, client):
+    """Fetch native Deriv candles so daily/4h baselines do not depend on 1m history depth."""
+    specs = {"15m": (900, 300), "1h": (3600, 240), "4h": (14400, 120), "1d": (86400, 90)}
+    histories, errors = {}, {}
+    for label, (granularity, count) in specs.items():
+        try:
+            histories[label] = fetch_deriv_candle_history(symbol, count, client, granularity)
+        except Exception as exc:
+            histories[label] = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
+            errors[label] = str(exc)
+    return histories, errors
+
+
+def merge_candle_history(live_candles, historical_candles):
+    """Historical 1m candles plus live tick-derived updates; live wins per minute."""
+    frames = [x for x in (historical_candles, live_candles) if x is not None and not x.empty]
+    if not frames:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
+    merged = pd.concat(frames, ignore_index=True)
+    merged["datetime"] = pd.to_datetime(merged["datetime"], utc=True, errors="coerce")
+    merged = merged.dropna(subset=["datetime", "open", "high", "low", "close"])
+    return merged.sort_values("datetime").drop_duplicates("datetime", keep="last").reset_index(drop=True)
 
 
 def fetch_deriv_ticks(symbol, count=4500, client=None):
@@ -575,7 +584,8 @@ def ticks_to_candles(ticks):
 
 
 def aggregate_timeframe(one_minute, minutes):
-    data = one_minute.set_index("datetime")
+    data = one_minute.set_index("datetime").copy()
+    data["_observed"] = 1
     result = data.resample(
         f"{minutes}min",
         label="left",
@@ -584,17 +594,19 @@ def aggregate_timeframe(one_minute, minutes):
         "open": "first",
         "high": "max",
         "low": "min",
-        "close": "last"
-    }).dropna().reset_index()
+        "close": "last",
+        "_observed": "sum"
+    }).dropna().reset_index().rename(columns={"_observed": "observed_minutes"})
 
     now = pd.Timestamp.now(tz="UTC").floor("min")
     result = result[
-        result.datetime + pd.Timedelta(minutes=minutes) <= now
+        (result.datetime + pd.Timedelta(minutes=minutes) <= now)
+        & (result.observed_minutes >= minutes)
     ]
-    return result.reset_index(drop=True)
+    return result.drop(columns=["observed_minutes"]).reset_index(drop=True)
 
 
-def session_intelligence(ticks, one_minute):
+def session_intelligence(ticks, one_minute, timeframe_history=None):
     """Measure candle-range and tick-activity context; tick count is NOT volume."""
     result = {}
     if one_minute is None or one_minute.empty:
@@ -606,17 +618,37 @@ def session_intelligence(ticks, one_minute):
     if completed_1m.empty:
         return result
     for label, minutes in (("15m", 15), ("1h", 60), ("4h", 240), ("1d", 1440)):
-        bars = aggregate_timeframe(completed_1m, minutes)
+        native = (timeframe_history or {}).get(label)
+        if native is not None and not native.empty:
+            bars = native.copy()
+            bars["datetime"] = pd.to_datetime(bars["datetime"], utc=True, errors="coerce")
+            bars = bars.dropna(subset=["datetime", "open", "high", "low", "close"])
+            bars = bars[bars.datetime + pd.Timedelta(minutes=minutes) <= now_utc].reset_index(drop=True)
+        else:
+            bars = aggregate_timeframe(completed_1m, minutes)
         if bars.empty:
             result[label] = {"bars": 0, "range": None, "average": None, "state": "COLLECTING"}
             continue
         bars = bars.copy()
         bars["range"] = bars.high - bars.low
+        close_series = bars.close.astype(float)
+        ema_fast = close_series.ewm(span=9, adjust=False).mean()
+        ema_slow = close_series.ewm(span=21, adjust=False).mean()
+        if len(bars) >= 21 and ema_fast.iloc[-1] > ema_slow.iloc[-1] and close_series.iloc[-1] > ema_fast.iloc[-1]:
+            trend = "BULLISH"
+        elif len(bars) >= 21 and ema_fast.iloc[-1] < ema_slow.iloc[-1] and close_series.iloc[-1] < ema_fast.iloc[-1]:
+            trend = "BEARISH"
+        else:
+            trend = "MIXED / BUILDING"
         latest = float(bars.range.iloc[-1])
-        baseline = float(bars.range.tail(20).mean())
-        ratio = latest / baseline if baseline > 0 else 1.0
-        state = "EXPANDING" if ratio >= 1.35 else "CONTRACTING" if ratio <= 0.70 else "NORMAL"
-        result[label] = {"bars": len(bars), "range": latest, "average": baseline, "ratio": ratio, "state": state}
+        prior_ranges = bars.range.iloc[:-1].tail(20)
+        if len(prior_ranges) < 5:
+            result[label] = {"bars": len(bars), "range": latest, "average": None, "ratio": None, "state": "COLLECTING BASELINE", "trend": trend}
+            continue
+        baseline = float(prior_ranges.mean())
+        ratio = latest / baseline if baseline > 0 else None
+        state = "EXPANDING" if ratio is not None and ratio >= 1.35 else "CONTRACTING" if ratio is not None and ratio <= 0.70 else "NORMAL" if ratio is not None else "COLLECTING BASELINE"
+        result[label] = {"bars": len(bars), "range": latest, "average": baseline, "ratio": ratio, "state": state, "trend": trend}
     # Activity proxy: number of received ticks per completed minute. Not exchange volume.
     if ticks is not None and not ticks.empty:
         tick_data = ticks.copy()
@@ -624,14 +656,28 @@ def session_intelligence(ticks, one_minute):
         counts = tick_data.set_index("datetime").resample("1min").size()
         counts = counts[counts.index + pd.Timedelta(minutes=1) <= now_utc]
         if not counts.empty:
-            recent = float(counts.tail(15).mean())
-            baseline = float(counts.tail(120).mean())
-            result["tick_activity"] = {"recent_per_min": recent, "baseline_per_min": baseline,
-                "state": "ABOVE BASELINE" if recent > baseline * 1.25 else "BELOW BASELINE" if recent < baseline * 0.75 else "NORMAL"}
+            recent_window = counts.tail(15)
+            prior_window = counts.iloc[:-15].tail(120)
+            recent = float(recent_window.mean())
+            baseline = float(prior_window.mean()) if len(prior_window) >= 15 else None
+            activity_state = ("ABOVE BASELINE" if recent > baseline * 1.25 else "BELOW BASELINE" if recent < baseline * 0.75 else "NORMAL") if baseline and baseline > 0 else "COLLECTING BASELINE"
+            result["tick_activity"] = {"recent_per_min": recent, "baseline_per_min": baseline, "state": activity_state}
         # Hour-of-day CAT profile from observed ticks; descriptive only.
         local = tick_data.datetime.dt.tz_convert("Africa/Lusaka")
         hourly = pd.DataFrame({"hour": local.dt.hour, "tick": 1}).groupby("hour").tick.sum()
         result["hour_profile"] = {int(k): int(v) for k, v in hourly.items()}
+        range_frame = completed_1m.copy()
+        range_frame["local_hour"] = range_frame.datetime.dt.tz_convert("Africa/Lusaka").dt.hour
+        range_frame["four_hour_block"] = (range_frame.local_hour // 4) * 4
+        range_frame["range"] = range_frame.high - range_frame.low
+        result["hour_range_profile"] = {
+            int(hour): {"average_range": float(group.range.mean()), "bars": int(len(group))}
+            for hour, group in range_frame.groupby("local_hour") if len(group) >= 3
+        }
+        result["four_hour_profile"] = {
+            f"{int(block):02d}:00-{(int(block)+4)%24:02d}:00": {"average_range": float(group.range.mean()), "bars": int(len(group))}
+            for block, group in range_frame.groupby("four_hour_block") if len(group) >= 10
+        }
     return result
 
 
@@ -821,9 +867,19 @@ def analyze_market_structure(completed):
         label = "RANGE / MIXED STRUCTURE"
         detail = "Recent completed candles do not show a clear directional sequence."
 
+    swing_highs, swing_lows = confirmed_pivots(completed.tail(60).reset_index(drop=True), 2)
+    swing_label = "INSUFFICIENT SWINGS"
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        hh = swing_highs[-1][1] > swing_highs[-2][1]
+        hl = swing_lows[-1][1] > swing_lows[-2][1]
+        lh = swing_highs[-1][1] < swing_highs[-2][1]
+        ll = swing_lows[-1][1] < swing_lows[-2][1]
+        swing_label = "HH + HL · UPTREND" if hh and hl else "LH + LL · DOWNTREND" if lh and ll else "MIXED SWING STRUCTURE"
+
     return {
         "label": label,
         "detail": detail,
+        "swing_structure": swing_label,
         "opposing_pressure": opposing_pressure,
         "recent_direction": recent_direction,
         "prior_impulse": prior_direction,
@@ -853,204 +909,214 @@ def assess_market_structure_risk(structure, direction):
     return []
 
 
+def candle_bible_analysis(candles):
+    """Contextual candle-pattern reader. Patterns are observations, never entry authority."""
+    if candles is None or len(candles) < 3:
+        return {"patterns": [], "bias": "INSUFFICIENT DATA", "note": "Need at least three completed candles."}
+    d = candles.tail(3).reset_index(drop=True)
+    a, b, c = [r for _, r in d.iterrows()]
+    def parts(r):
+        o,h,l,cl = map(float, (r.open,r.high,r.low,r.close))
+        span=max(h-l,1e-12)
+        return o,h,l,cl,span,abs(cl-o),(h-max(o,cl)),(min(o,cl)-l),(cl-l)/span
+    o1,h1,l1,c1,ra,ba,ua,la,pa=parts(a)
+    o2,h2,l2,c2,rb,bb,ub,lb,pb=parts(b)
+    o3,h3,l3,c3,rc,bc,uc,lc,pc=parts(c)
+    patterns=[]
+    # Current candle formations
+    if bc <= rc*0.12:
+        patterns.append("DOJI / INDECISION")
+    if lb >= max(bb*2.0, rc*0.45) and pc >= .62:
+        patterns.append("HAMMER-LIKE LOWER REJECTION")
+    if ub >= max(bb*2.0, rc*0.45) and pc <= .38:
+        patterns.append("SHOOTING-STAR-LIKE UPPER REJECTION")
+    if c2 < o2 and c3 > o3 and o3 <= c2 and c3 >= o2:
+        patterns.append("BULLISH ENGULFING")
+    if c2 > o2 and c3 < o3 and o3 >= c2 and c3 <= o2:
+        patterns.append("BEARISH ENGULFING")
+    if c1 > o1 and c2 > o2 and c3 > o3 and c3 > c2 > c1:
+        patterns.append("THREE WHITE SOLDIERS-LIKE ADVANCE")
+    if c1 < o1 and c2 < o2 and c3 < o3 and c3 < c2 < c1:
+        patterns.append("THREE BLACK CROWS-LIKE DECLINE")
+    # Harami: current body contained by previous body
+    if min(o3,c3) > min(o2,c2) and max(o3,c3) < max(o2,c2):
+        patterns.append("HARAMI / MOMENTUM PAUSE")
+    # Piercing line / dark cloud cover
+    if c2 < o2 and c3 > o3 and o3 < c2 and c3 > (o2 + c2) / 2 and c3 < o2:
+        patterns.append("PIERCING LINE (BULLISH REVERSAL CANDIDATE)")
+    if c2 > o2 and c3 < o3 and o3 > c2 and c3 < (o2 + c2) / 2 and c3 > o2:
+        patterns.append("DARK CLOUD COVER (BEARISH REVERSAL CANDIDATE)")
+    # Morning / evening star: three-candle body sequence with a small middle body.
+    mid_small = bb <= max(ra, rc) * 0.35
+    if c1 < o1 and mid_small and c3 > o3 and c3 > (o1 + c1) / 2:
+        patterns.append("MORNING STAR-LIKE REVERSAL")
+    if c1 > o1 and mid_small and c3 < o3 and c3 < (o1 + c1) / 2:
+        patterns.append("EVENING STAR-LIKE REVERSAL")
+    if h3 < h2 and l3 > l2:
+        patterns.append("INSIDE BAR / COMPRESSION")
+    if h3 > h2 and l3 < l2:
+        patterns.append("OUTSIDE BAR / RANGE EXPANSION")
+    if bc >= rc * 0.88 and pc >= .9:
+        patterns.append("BULLISH MARUBOZU-LIKE CLOSE")
+    if bc >= rc * 0.88 and pc <= .1:
+        patterns.append("BEARISH MARUBOZU-LIKE CLOSE")
+    bias = "BULLISH CONTEXT" if pc > .65 and c3 > o3 else "BEARISH CONTEXT" if pc < .35 and c3 < o3 else "MIXED / INDECISION"
+    return {"patterns": patterns or ["NO HIGH-CONFIDENCE CLASSIC PATTERN"], "bias": bias,
+            "note": "Candlestick names are approximate OHLC pattern matches. They provide context only; the Three-Step Staircase remains the sole entry authority."}
+
+
+def homma_sakata_analysis(candles):
+    """Conservative Sakata-inspired pattern observations; no forced pattern labels."""
+    if candles is None or len(candles) < 20:
+        return {"observations": [], "state": "COLLECTING HISTORY"}
+    d=candles.tail(40).reset_index(drop=True)
+    highs=d.high.astype(float); lows=d.low.astype(float); closes=d.close.astype(float)
+    obs=[]
+    # Three mountains: three separated swing peaks with intervening declines
+    peaks=[]
+    for i in range(2,len(d)-2):
+        if highs.iloc[i] >= max(highs.iloc[i-2:i+3]) and (highs.iloc[i-2:i+3] == highs.iloc[i]).sum()==1:
+            peaks.append((i,float(highs.iloc[i])))
+    if len(peaks)>=3:
+        p=peaks[-3:]
+        if p[1][0]-p[0][0]>=2 and p[2][0]-p[1][0]>=2:
+            vals=[x[1] for x in p]
+            if max(vals)-min(vals) <= max(vals)*0.003:
+                obs.append("THREE MOUNTAINS CANDIDATE — repeated resistance area")
+    # Three rivers: three distinct troughs near a common support region
+    troughs=[]
+    for i in range(2,len(d)-2):
+        if lows.iloc[i] <= min(lows.iloc[i-2:i+3]) and (lows.iloc[i-2:i+3] == lows.iloc[i]).sum()==1:
+            troughs.append((i,float(lows.iloc[i])))
+    if len(troughs)>=3:
+        t=troughs[-3:]; vals=[x[1] for x in t]
+        if t[1][0]-t[0][0]>=2 and t[2][0]-t[1][0]>=2 and max(vals)-min(vals)<=max(vals)*0.003:
+            obs.append("THREE RIVERS CANDIDATE — repeated support area")
+    # Three methods: impulse, 1-3 countertrend candles contained in impulse range, continuation close
+    if len(d)>=6:
+        x=d.tail(6).reset_index(drop=True)
+        first=x.iloc[0]; last=x.iloc[-1]; middle=x.iloc[1:5]
+        impulse_up=float(first.close)>float(first.open) and float(last.close)>float(last.open)
+        impulse_down=float(first.close)<float(first.open) and float(last.close)<float(last.open)
+        contained=(float(middle.high.max())<=max(float(first.open),float(first.close),float(last.open),float(last.close)) + abs(float(first.close)-float(first.open))*0.5
+                   and float(middle.low.min())>=min(float(first.open),float(first.close),float(last.open),float(last.close)) - abs(float(first.close)-float(first.open))*0.5)
+        if impulse_up and contained and float(last.close)>float(middle.high.max()): obs.append("THREE METHODS BULLISH CANDIDATE")
+        if impulse_down and contained and float(last.close)<float(middle.low.min()): obs.append("THREE METHODS BEARISH CANDIDATE")
+    # Three Parallel Lines: three consecutive directional bodies with progressive closes.
+    if len(d) >= 3:
+        q = d.tail(3).reset_index(drop=True)
+        q_up = all(float(r.close) > float(r.open) for _, r in q.iterrows())
+        q_down = all(float(r.close) < float(r.open) for _, r in q.iterrows())
+        q_closes = q.close.astype(float).tolist()
+        q_opens = q.open.astype(float).tolist()
+        if q_up and q_closes[0] < q_closes[1] < q_closes[2] and q_opens[0] < q_opens[1] < q_opens[2]:
+            obs.append("THREE PARALLEL LINES — BULLISH CANDIDATE (three rising bodies)")
+        elif q_down and q_closes[0] > q_closes[1] > q_closes[2] and q_opens[0] > q_opens[1] > q_opens[2]:
+            obs.append("THREE PARALLEL LINES — BEARISH CANDIDATE (three falling bodies)")
+        # Three Gaps: three successive non-overlapping gaps in one direction.
+        if len(d) >= 4:
+            g = d.tail(4).reset_index(drop=True)
+            up_gaps = all(float(g.iloc[i].low) > float(g.iloc[i-1].high) for i in range(1,4))
+            down_gaps = all(float(g.iloc[i].high) < float(g.iloc[i-1].low) for i in range(1,4))
+            if up_gaps:
+                obs.append("THREE GAPS UP — RARE EXHAUSTION-RISK CANDIDATE; VERIFY CONTEXT")
+            elif down_gaps:
+                obs.append("THREE GAPS DOWN — RARE EXHAUSTION-RISK CANDIDATE; VERIFY CONTEXT")
+    return {"observations": obs or ["No confirmed Sakata formation in the available sample"],
+            "state": "PATTERN CONTEXT ONLY",
+            "note": "Sakata labels are conservative OHLC candidates. Gaps and parallel-line formations are uncommon in continuous synthetic markets; none is an entry trigger. Three-Step Staircase remains the only entry authority."}
+
+
+def support_resistance_analysis(candles, lookback=80):
+    if candles is None or len(candles)<10: return {"support":None,"resistance":None,"note":"Collecting swing history."}
+    d=candles.tail(lookback).reset_index(drop=True)
+    highs,lows=confirmed_pivots(d,2)
+    price=float(d.close.iloc[-1])
+    resist=[v for _,v in highs if v>=price]
+    support=[v for _,v in lows if v<=price]
+    return {"support":max(support) if support else None,
+            "resistance":min(resist) if resist else None,
+            "note":"Nearest confirmed pivot levels; context only, not staircase vetoes."}
+
+
 def ghost_protocol(ticks):
-    """Candle 1 identifies, Candle 2 prepares/confirms, Candle 3 is entry."""
+    """Three-Step Staircase: C1 setup, C2 completed close, C3 only entry window."""
     if ticks is None or ticks.empty:
-        return {
-            "signal": "WAIT", "stage": "SCANNING",
-            "reason": "Waiting for Deriv tick data."
-        }
+        return {"signal": "WAIT", "stage": "FEED CHECK", "reason": "Waiting for Deriv tick data."}
+
+    ticks = ticks.copy()
+    ticks["datetime"] = pd.to_datetime(ticks["datetime"], utc=True, errors="coerce")
+    ticks["close"] = pd.to_numeric(ticks["close"], errors="coerce")
+    ticks = ticks.dropna(subset=["datetime", "close"]).sort_values("datetime", kind="stable")
+    if ticks.empty:
+        return {"signal": "WAIT", "stage": "FEED CHECK", "reason": "No valid tick observations."}
 
     latest_price = float(ticks.close.iloc[-1])
     now = pd.Timestamp.now(tz="UTC")
     latest_tick = pd.Timestamp(ticks.datetime.iloc[-1])
     tick_age = (now - latest_tick).total_seconds()
-
-    base = {
-        "signal": "WAIT",
-        "stage": "SCANNING",
-        "reason": "Waiting for a new three-candle staircase.",
-        "price": latest_price,
-        "tick_time": latest_tick,
-        "tick_age": tick_age
-    }
-
+    base = {"signal": "WAIT", "stage": "SCANNING", "reason": "Waiting for a valid C1 → C2 → C3 sequence.",
+            "price": latest_price, "tick_time": latest_tick, "tick_age": tick_age}
     if tick_age > 8 or tick_age < -2:
-        return {**base, "stage": "FEED CHECK", "reason":
-                f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."}
+        return {**base, "stage": "FEED CHECK", "reason": f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."}
 
     candles = ticks_to_candles(ticks)
-    if len(candles) < 4:
-        return {**base, "reason": "Collecting enough one-minute candles."}
-
     current_minute = now.floor("min")
-    forming = candles[candles.datetime == current_minute]
-    completed = candles[candles.datetime < current_minute].reset_index(drop=True)
-
+    completed = candles[candles.datetime + pd.Timedelta(minutes=1) <= current_minute].reset_index(drop=True)
+    forming = candles[(candles.datetime == current_minute)]
     if forming.empty or len(completed) < 3:
-        return {**base, "reason": "Waiting for the current one-minute candle and history."}
+        return {**base, "reason": "Waiting for a current candle and at least three completed candles."}
 
     market_structure = analyze_market_structure(completed)
-    base["market_structure"] = market_structure
-
     candle_age = (now - current_minute).total_seconds()
-    base.update({
-        "candle_time": current_minute,
-        "candle_age": candle_age
-    })
+    base.update({"market_structure": market_structure, "candle_time": current_minute, "candle_age": candle_age})
 
-    # Candle 2 is forming: the latest completed candle is Candle 1.
-    c1 = completed.iloc[-1]
-    previous = completed.iloc[-2]
-    c1_time = pd.Timestamp(c1.datetime)
-    direction, pattern = identify_candle_one(c1, previous)
-    c1_close = float(c1.close)
-
-    previous_time = pd.Timestamp(previous.datetime)
-    consecutive_previous_c1 = previous_time == c1_time - pd.Timedelta(minutes=1)
-    if direction and consecutive_previous_c1 and current_minute == c1_time + pd.Timedelta(minutes=1):
-        beyond_level = (
-            latest_price > c1_close if direction == "CALL"
-            else latest_price < c1_close
-        )
-        seconds_to_candle3 = max(
-            0, int(60 - candle_age)
-        )
-        if beyond_level:
-            return {
-                **base,
-                "signal": "WAIT",
-                "stage": "SETUP DEVELOPING",
-                "reason": (
-                    f"{pattern} identified. Candle 2 is currently beyond "
-                    f"Candle 1 close ({fmt_price(c1_close)}), but it has not closed. "
-                    "No directional signal is issued before Candle 3."
-                ),
-                "stage_detail": "CANDLE 2 FORMING — NOT CONFIRMED",
-                "pattern": pattern,
-                "entry_point": c1_close,
-                "candle1_time": c1_time,
-                "entry_time": current_minute + pd.Timedelta(minutes=1),
-                "countdown": seconds_to_candle3
-            }
-        return {
-            **base,
-            "stage": "CANDLE 2 WAITING",
-            "reason": (
-                f"{pattern} found. Waiting for price to move "
-                f"{'above' if direction == 'CALL' else 'below'} "
-                f"Candle 1 close at {fmt_price(c1_close)}."
-            ),
-            "pattern": pattern,
-            "entry_point": c1_close,
-            "candle1_time": c1_time
-        }
-
-    # Candle 3 is forming: completed[-2] is Candle 1 and completed[-1] is Candle 2.
-    c1 = completed.iloc[-2]
-    c2 = completed.iloc[-1]
-    previous = completed.iloc[-3]
-    c1_time = pd.Timestamp(c1.datetime)
-    direction, pattern = identify_candle_one(c1, previous)
-    c1_close = float(c1.close)
-    c2_close = float(c2.close)
-
-    c2_time = pd.Timestamp(c2.datetime)
-    previous_time = pd.Timestamp(previous.datetime)
-    consecutive_previous_c1 = previous_time == c1_time - pd.Timedelta(minutes=1)
-    consecutive_c1_c2 = c2_time == c1_time + pd.Timedelta(minutes=1)
-    if direction and consecutive_previous_c1 and consecutive_c1_c2 and current_minute == c1_time + pd.Timedelta(minutes=2):
-        candle2_confirmed = (
-            c2_close > c1_close if direction == "CALL"
-            else c2_close < c1_close
-        )
-        candle3_still_valid = (
-            latest_price > c1_close if direction == "CALL"
-            else latest_price < c1_close
-        )
-
-        if not candle2_confirmed:
-            return {
-                **base,
-                "stage": "INVALIDATED",
-                "reason": (
-                    "Candle 2 did not close beyond Candle 1's closing "
-                    "price. The staircase is invalid. Do not enter."
-                ),
-                "pattern": pattern,
-                "entry_point": c1_close,
-                "candle1_time": c1_time,
-                "candle2_close": c2_close
-            }
-
-        if not candle3_still_valid:
-            return {
-                **base,
-                "stage": "INVALIDATED",
-                "reason": (
-                    "Candle 3 has moved back across the Candle 1 closing "
-                    "level. The setup is invalid. Do not enter."
-                ),
-                "pattern": pattern,
-                "entry_point": c1_close,
-                "candle1_time": c1_time,
-                "candle2_close": c2_close
-            }
-
-        warnings = assess_candle3_risk(
-            completed, direction, c2, latest_price
-        )
-        warnings.extend(
-            assess_market_structure_risk(market_structure, direction)
-        )
+    # FIRST: test whether the last two completed candles are C1 and C2,
+    # making the currently forming candle C3. This must precede C2 detection.
+    c1, c2, previous = completed.iloc[-2], completed.iloc[-1], completed.iloc[-3]
+    c1_time, c2_time, previous_time = map(pd.Timestamp, (c1.datetime, c2.datetime, previous.datetime))
+    c1_direction, c1_pattern = identify_candle_one(c1, previous)
+    c3_sequence = (
+        c1_direction is not None
+        and previous_time == c1_time - pd.Timedelta(minutes=1)
+        and c2_time == c1_time + pd.Timedelta(minutes=1)
+        and current_minute == c1_time + pd.Timedelta(minutes=2)
+    )
+    if c3_sequence:
+        c1_close, c2_close = float(c1.close), float(c2.close)
+        c2_confirmed = c2_close > c1_close if c1_direction == "CALL" else c2_close < c1_close
+        c3_valid = latest_price > c1_close if c1_direction == "CALL" else latest_price < c1_close
+        base.update({"pattern": c1_pattern, "entry_point": c1_close, "candle1_time": c1_time,
+                     "candle2_close": c2_close, "entry_time": current_minute})
+        if not c2_confirmed:
+            return {**base, "stage": "INVALIDATED", "reason": "Candle 2 did not CLOSE beyond Candle 1 close. Staircase invalidated; no entry."}
+        if not c3_valid:
+            return {**base, "stage": "INVALIDATED", "reason": "Candle 3 crossed back through Candle 1 close. Staircase invalidated; no entry."}
+        warnings = assess_candle3_risk(completed, c1_direction, c2, latest_price)
+        warnings.extend(assess_market_structure_risk(market_structure, c1_direction))
         if warnings:
-            return {
-                **base,
-                "signal": direction,
-                "stage": "CAUTION",
-                "reason": (
-                    "The Three-Step Staircase is valid, but Candle 2 / nearby "
-                    "price structure shows possible opposing pressure. "
-                    "Review the warnings; this is NOT an ENTRY READY alert."
-                ),
-                "warnings": warnings,
-                "stage_detail": "STAIRCASE VALID — CAUTION",
-                "pattern": pattern,
-                "entry_point": c1_close,
-                "candle1_time": c1_time,
-                "candle2_close": c2_close,
-                "entry_time": current_minute,
-                "countdown": max(0, int(60 - candle_age))
-            }
+            return {**base, "signal": c1_direction, "stage": "CAUTION",
+                    "reason": "C1/C2 confirmation exists, but soft risk warnings require caution. This is NOT ENTRY READY.",
+                    "warnings": warnings, "stage_detail": "STAIRCASE VALID — CAUTION"}
+        return {**base, "signal": c1_direction, "stage": "ENTRY READY", "warnings": [],
+                "reason": f"Candle 2 closed beyond Candle 1 close and Candle 3 remains on the valid side of {fmt_price(c1_close)}. Manual {c1_direction} entry window.",
+                "stage_detail": "C2 CLOSED — C3 ENTRY WINDOW"}
 
-        return {
-            **base,
-            "signal": direction,
-            "stage": "ENTRY READY",
-            "reason": (
-                f"Candle 2 closed {'above' if direction == 'CALL' else 'below'} "
-                f"Candle 1 close. Candle 3 is on the valid side of the entry "
-                f"level ({fmt_price(c1_close)}). Manual "
-                f"{'RISE' if direction == 'CALL' else 'FALL'} entry window."
-            ),
-            "warnings": [],
-            "stage_detail": "CANDLE 2 CONFIRMED — CANDLE 3 ENTRY",
-            "pattern": pattern,
-            "entry_point": c1_close,
-            "candle1_time": c1_time,
-            "candle2_close": c2_close,
-            "entry_time": current_minute,
-            "countdown": max(0, int(60 - candle_age))
-        }
+    # SECOND: current candle is C2 and the latest completed candle may be C1.
+    c1, previous = completed.iloc[-1], completed.iloc[-2]
+    c1_time = pd.Timestamp(c1.datetime)
+    direction, pattern = identify_candle_one(c1, previous)
+    consecutive = pd.Timestamp(previous.datetime) == c1_time - pd.Timedelta(minutes=1)
+    if direction and consecutive and current_minute == c1_time + pd.Timedelta(minutes=1):
+        c1_close = float(c1.close)
+        beyond = latest_price > c1_close if direction == "CALL" else latest_price < c1_close
+        base.update({"pattern": pattern, "entry_point": c1_close, "candle1_time": c1_time})
+        if beyond:
+            return {**base, "stage": "SETUP DEVELOPING", "reason": f"{pattern} identified. Candle 2 is temporarily beyond C1 close but has NOT closed. No directional signal yet.",
+                    "entry_time": current_minute + pd.Timedelta(minutes=1), "countdown": max(0, int(60-candle_age))}
+        return {**base, "stage": "CANDLE 2 WAITING", "reason": f"{pattern} found. Waiting for Candle 2 to move beyond C1 close at {fmt_price(c1_close)}."}
 
-    return {
-        **base,
-        "stage": "SCANNING",
-        "reason": (
-            "Waiting for the next valid Candle 1 → Candle 2 → Candle 3 "
-            "sequence. Candle size and higher-timeframe momentum are not filters."
-        )
-    }
+    return {**base, "stage": "SCANNING", "reason": "No valid consecutive C1/C2/C3 sequence at this moment. Continue observing."}
 
 
 # ============================================================
@@ -1077,6 +1143,7 @@ def build_signal_record(market, instrument, result, expiry=1):
         "entry_point": result.get("entry_point"),
         "signal_created": created.isoformat(),
         "candle_time": as_cat(result["candle_time"]).isoformat(),
+        "candle1_time": str(result.get("candle1_time", "")),
         "reference_price": result.get("price"),
         "entry_time": entry.isoformat(),
         "expiry_time": expiration.isoformat(),
@@ -1085,86 +1152,56 @@ def build_signal_record(market, instrument, result, expiry=1):
     }
 
 
+def build_preparation_record(market, instrument, result, expiry=1):
+    """Neutral preparation clock: no CALL/PUT before Candle 2 has closed."""
+    entry_value = result.get("entry_time")
+    if entry_value is None:
+        return None
+    entry = as_cat(entry_value).to_pydatetime()
+    created = now_cat()
+    if entry <= created:
+        return None
+    return {
+        "market": market, "instrument": instrument, "direction": "WAIT",
+        "reason": result.get("reason", "Candle 2 is still forming; wait for its close."),
+        "stage": "PREPARE", "pattern": result.get("pattern", ""),
+        "entry_point": result.get("entry_point"),
+        "signal_created": created.isoformat(),
+        "candle_time": as_cat(result.get("candle_time", created)).isoformat(),
+        "candle1_time": str(result.get("candle1_time", "")),
+        "reference_price": result.get("price"),
+        "entry_time": entry.isoformat(),
+        "expiry_time": (entry + timedelta(minutes=expiry)).isoformat(),
+        "expiry_minutes": expiry, "status": "PREPARATION"
+    }
+
+
 def show_signal_pad(signal):
     if not signal:
-        st.markdown(
-            """
-            <div class="signal-card signal-wait">
-                <h3>WAIT</h3>
-                <div class="small-muted">
-                    No fresh valid signal. No trade is recommended.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown("<div class=\"signal-card signal-wait\"><h3>WAIT · NO ACTIVE SIGNAL</h3><div class=\"small-muted\">GHOST is analysing. No countdown or timer is displayed until a valid signal is issued.</div></div>", unsafe_allow_html=True)
         return
-
-    now = now_cat()
-    entry = datetime.fromisoformat(signal["entry_time"])
-    expiry = datetime.fromisoformat(signal["expiry_time"])
-
-    if now < entry:
-        status = "PREPARE"
-        remaining = int((entry - now).total_seconds())
-    elif now < expiry:
-        status = "ENTRY WINDOW"
-        remaining = int((expiry - now).total_seconds())
-    else:
-        status = "EXPIRED"
-        remaining = 0
-
-    color = (
-        "signal-call" if signal["direction"] == "CALL"
-        else "signal-put"
-    )
-
-    st.markdown(
-        f"""
-        <div class="signal-card {color}">
-            <div class="small-muted">
-                {signal["market"]} · {signal["instrument"]}
-            </div>
-            <h2>
-                {signal["direction"]}
-                &nbsp;
-                <span style="font-size:0.8em">{status}</span>
-            </h2>
-            <div><b>{signal.get("stage", status)}</b></div>
-            <div>{signal["reason"]}</div>
-            <div>Entry level: {fmt_price(signal.get("entry_point"))}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    a, b, c, d = st.columns(4)
-    a.metric("Reference price", fmt_price(signal["reference_price"]))
-    b.metric(
-        "Time remaining",
-        f"{remaining // 60:02d}:{remaining % 60:02d}"
-    )
-    c.metric("Entry time (CAT)", entry.strftime("%H:%M:%S"))
-    d.metric("Expiry time (CAT)", expiry.strftime("%H:%M:%S"))
-
-    st.caption(
-        "Signal candle: "
-        + datetime.fromisoformat(signal["candle_time"]).strftime(
-            "%Y-%m-%d %H:%M:%S CAT"
-        )
-        + " · Created: "
-        + datetime.fromisoformat(signal["signal_created"]).strftime(
-            "%H:%M:%S CAT"
-        )
-    )
-
+    now=now_cat(); entry=datetime.fromisoformat(signal["entry_time"]); expiry=datetime.fromisoformat(signal["expiry_time"])
+    if signal.get("stage") == "PREPARE" and now >= entry:
+        st.markdown("<div class='signal-card signal-wait'><h3>PREPARATION WINDOW CLOSED</h3><div class='small-muted'>Waiting for Candle 2 close validation. No directional signal or entry timer is active.</div></div>", unsafe_allow_html=True)
+        return
+    if now < entry: status="PREPARE"; remaining=max(0,int((entry-now).total_seconds()))
+    elif now < expiry: status="ENTRY WINDOW"; remaining=max(0,int((expiry-now).total_seconds()))
+    else: status="EXPIRED"; remaining=0
     if status == "EXPIRED":
-        st.warning("Signal expired. Do not reuse this signal.")
-    elif status == "ENTRY WINDOW":
-        st.info(
-            "Signal window active. Confirm the live Deriv quote "
-            "and contract conditions before any demo entry."
-        )
+        st.markdown("<div class='signal-card signal-wait'><h3>SIGNAL EXPIRED</h3><div class='small-muted'>Timer removed. This alert must not be reused.</div></div>",unsafe_allow_html=True)
+        return
+    if status == "PREPARE":
+        color = "signal-wait"
+        heading = "PREPARATION WINDOW · NO DIRECTION YET"
+    else:
+        color = "signal-call" if signal["direction"] == "CALL" else "signal-put"
+        heading = f"{signal['direction']} · {status}"
+    st.markdown(f'''<div class="signal-card {color}"><div class="small-muted">{signal['market']} · {signal['instrument']}</div><h2>{heading}</h2><div><b>{signal.get('stage','ENTRY READY')}</b></div><div>{signal['reason']}</div><div>Entry reference: {fmt_price(signal.get('entry_point'))}</div></div>''',unsafe_allow_html=True)
+    a,b,c=st.columns(3)
+    a.metric("SIGNAL TIMER",f"{remaining//60:02d}:{remaining%60:02d}")
+    b.metric("ENTRY (CAT)",entry.strftime("%H:%M:%S"))
+    c.metric("EXPIRY (CAT)",expiry.strftime("%H:%M:%S"))
+    st.caption("Timer exists only during this active signal lifecycle. Expired or invalidated signals are cleared.")
 
 
 # ============================================================
@@ -1206,6 +1243,14 @@ with st.sidebar:
             "Deriv Synthetics · GHOST PROTOCOL"
         ]
     )
+    if market.startswith("Pocket"):
+        old_feed = st.session_state.pop("deriv_live_feed", None)
+        st.session_state.pop("deriv_live_symbol", None)
+        st.session_state.pop("deriv_historical_candles", None)
+        st.session_state.pop("deriv_mtf_history", None)
+        st.session_state.pop("deriv_mtf_errors", None)
+        if old_feed is not None:
+            old_feed.stop()
 
     expiry = st.selectbox(
         "Signal expiry",
@@ -1227,10 +1272,22 @@ with st.sidebar:
         "Automatically scan",
         value=True
     )
+    if st.button("STOP DERIV LIVE STREAM", use_container_width=True):
+        old_feed = st.session_state.pop("deriv_live_feed", None)
+        st.session_state.pop("deriv_live_symbol", None)
+        st.session_state.pop("deriv_historical_candles", None)
+        st.session_state.pop("deriv_mtf_history", None)
+        st.session_state.pop("deriv_mtf_errors", None)
+        st.session_state["stop_stream_requested"] = True
+        if old_feed is not None:
+            old_feed.stop()
+        st.session_state.pop("deriv_output", None)
+        st.session_state.pop("active_signal", None)
+        st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "GHOST checks the Deriv feed every 15 seconds when automatic "
-        "scanning is enabled. Forex scans once per minute."
+        "Deriv uses a persistent live tick subscription with analysis refresh every 2 seconds. "
+        "Forex scans once per minute."
     )
     st.divider()
 
@@ -1274,15 +1331,18 @@ with st.sidebar:
 # AUTO REFRESH AND SCAN SCHEDULER
 # ============================================================
 
+if st.session_state.pop("stop_stream_requested", False):
+    auto_scan = False
+
 if auto_refresh:
-    st_autorefresh(interval=15000, key="desk_clock")
+    st_autorefresh(interval=2000, key="desk_clock")
 
 now = now_cat()
 st.caption(
     f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
 )
 
-scan_interval = 15 if market.startswith("Deriv") else 60
+scan_interval = 2 if market.startswith("Deriv") else 60
 scan_slot = int(time.time() // scan_interval)
 last_slot = st.session_state.get("last_auto_scan_slot")
 
@@ -1351,75 +1411,78 @@ if run_scan:
 
     else:
         try:
-            with st.spinner(
-                "Connecting to Deriv and analysing Volatility 100 (1s)..."
-            ):
-                with DerivClient(timeout=25) as deriv:
-                    symbols = deriv_symbols(deriv)
-                    selected = next(
-                        (
-                            item for item in symbols
-                            if item.get("symbol") == GHOST_SYMBOL
-                        ),
-                        None
-                    )
-
-                    if selected is None:
-                        raise RuntimeError(
-                            f"{GHOST_SYMBOL} was not found in Deriv's "
-                            "active-symbol list. Check returned symbols "
-                            "and market availability."
-                        )
-
-                    ticks = fetch_deriv_ticks(
-                        selected["symbol"], 4500, deriv
-                    )
-
+            with st.spinner("Starting or refreshing the persistent Deriv public tick stream..."):
+                existing_feed = st.session_state.get("deriv_live_feed")
+                existing_symbol = st.session_state.get("deriv_live_symbol")
+                if existing_feed is None or existing_symbol != GHOST_SYMBOL:
+                    if existing_feed is not None:
+                        existing_feed.stop()
+                    with DerivClient(timeout=25) as deriv:
+                        symbols = deriv_symbols(deriv)
+                        selected = next((item for item in symbols if item.get("symbol") == GHOST_SYMBOL), None)
+                        if selected is None:
+                            raise RuntimeError(f"{GHOST_SYMBOL} was not found in Deriv's active-symbol list.")
+                        seed = fetch_deriv_ticks(selected["symbol"], 5000, deriv)
+                        historical_candles = fetch_deriv_candle_history(selected["symbol"], 5000, deriv, 60)
+                        mtf_history, mtf_errors = fetch_deriv_mtf_history(selected["symbol"], deriv)
+                    feed = DerivLiveFeed(GHOST_SYMBOL, seed_ticks=seed).start()
+                    st.session_state["deriv_live_feed"] = feed
+                    st.session_state["deriv_live_symbol"] = GHOST_SYMBOL
+                    st.session_state["deriv_historical_candles"] = historical_candles
+                    st.session_state["deriv_mtf_history"] = mtf_history
+                    st.session_state["deriv_mtf_errors"] = mtf_errors
+                else:
+                    feed = existing_feed
+                ticks = feed.snapshot()
+                feed_status = feed.status()
+                if ticks.empty or len(ticks) < 120:
+                    raise RuntimeError("Deriv stream is starting; waiting for sufficient initial tick history.")
                 result = ghost_protocol(ticks)
+                candles = merge_candle_history(ticks_to_candles(ticks), st.session_state.get("deriv_historical_candles"))
 
             st.session_state["deriv_output"] = {
-                "instrument": GHOST_NAME,
-                "symbol": GHOST_SYMBOL,
-                "ticks": ticks,
-                "candles": ticks_to_candles(ticks),
-                "result": result,
+                "instrument": GHOST_NAME, "symbol": GHOST_SYMBOL,
+                "ticks": ticks, "candles": candles, "result": result,
+                "feed_status": feed_status,
+                "mtf_history": st.session_state.get("deriv_mtf_history", {}),
+                "mtf_errors": st.session_state.get("deriv_mtf_errors", {}),
                 "last_scan": now_cat().isoformat()
             }
             st.session_state["scan_market"] = "deriv"
-
-            if (
-                result.get("signal") in ("CALL", "PUT")
-                and result.get("stage") == "ENTRY READY"
-            ):
+            if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                 existing = st.session_state.get("active_signal")
-                same_signal = (
-                    existing
-                    and existing.get("direction") == result["signal"]
-                    and existing.get("candle_time")
-                    == as_cat(result["candle_time"]).isoformat()
-                    and existing.get("stage") == result.get("stage")
-                    and existing.get("instrument") == GHOST_NAME
-                )
-                if not same_signal:
-                    st.session_state["active_signal"] = build_signal_record(
-                        "GHOST PROTOCOL", GHOST_NAME, result, 1
-                    )
+                key = (result.get("signal"), str(result.get("candle1_time")), GHOST_NAME)
+                old_key = None if not existing else (existing.get("direction"), existing.get("candle1_time"), existing.get("instrument"))
+                if key != old_key:
+                    st.session_state["active_signal"] = build_signal_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
+            elif result.get("stage") == "SETUP DEVELOPING":
+                prep = build_preparation_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
+                if prep is not None:
+                    st.session_state["active_signal"] = prep
             else:
                 active = st.session_state.get("active_signal")
                 if active and active.get("instrument") == GHOST_NAME:
                     st.session_state.pop("active_signal", None)
-
+            st.session_state.pop("deriv_scan_error", None)
         except Exception as exc:
             st.session_state["deriv_scan_error"] = str(exc)
-            st.error(f"GHOST scan failed: {exc}")
+            st.error(f"GHOST feed/scan issue: {exc}")
 
 
 # ============================================================
 # SIGNAL PAD
 # ============================================================
 
-st.subheader("SIGNALS PAD")
+st.subheader("01 · SIGNAL COMMAND CENTRE")
 active_signal = st.session_state.get("active_signal")
+if active_signal:
+    try:
+        if now_cat() >= datetime.fromisoformat(active_signal["expiry_time"]):
+            st.session_state.pop("active_signal", None)
+            active_signal = None
+    except Exception:
+        st.session_state.pop("active_signal", None)
+        active_signal = None
 show_signal_pad(active_signal)
 
 
@@ -1428,7 +1491,7 @@ show_signal_pad(active_signal)
 # ============================================================
 
 if market.startswith("Pocket"):
-    st.subheader("THREE STEPS · Forex scanner")
+    st.subheader("02 · FOREX THREE-STEP SCANNER")
 
     results = (
         st.session_state.get("scan_output", [])
@@ -1472,7 +1535,7 @@ if market.startswith("Pocket"):
 # ============================================================
 
 else:
-    st.subheader("GHOST · THREE-STEP STAIRCASE")
+    st.subheader("02 · DERIV GHOST INTELLIGENCE")
 
     output = (
         st.session_state.get("deriv_output")
@@ -1486,10 +1549,15 @@ else:
             if output.get("ticks") is not None and not output["ticks"].empty
             else None
         )
-        render_ghost_candle_clock(latest_tick_time)
         result = output["result"]
         stage = result.get("stage", "SCANNING")
         direction = result.get("signal", "WAIT")
+        fs = output.get("feed_status", {})
+        feed_age = fs.get("last_tick_age")
+        feed_label = "CONNECTED" if fs.get("connected") and feed_age is not None and feed_age <= 8 else "RECONNECTING / DELAYED"
+        st.caption(f"DERIV STREAM · {feed_label} · last tick age: {feed_age:.1f}s" if feed_age is not None else f"DERIV STREAM · {feed_label}")
+        if fs.get("last_error"):
+            st.caption("Stream diagnostic: " + str(fs["last_error"]))
 
         st.markdown("### The three-candle sequence")
         a, b, c = st.columns(3)
@@ -1500,24 +1568,66 @@ else:
         st.markdown(f"**Current stage: {stage}**")
         st.write(result.get("reason", "Waiting for a valid setup."))
 
+        # Buyer/seller candle story: OHLC-derived pressure, not real order flow.
+        st.markdown("### BUYER / SELLER STORY ENGINE")
+        story_candles = output.get("candles")
+        if story_candles is not None and len(story_candles) >= 5:
+            closed_story = story_candles.copy()
+            closed_story["datetime"] = pd.to_datetime(closed_story["datetime"], utc=True)
+            closed_story = closed_story[closed_story.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].tail(8)
+            if not closed_story.empty:
+                green = int((closed_story.close > closed_story.open).sum())
+                red = int((closed_story.close < closed_story.open).sum())
+                overlap = float((closed_story.high - closed_story.low).tail(5).mean())
+                net = float(closed_story.close.iloc[-1] - closed_story.open.iloc[0])
+                story = "BUYERS DOMINANT" if green >= 6 and net > 0 else "SELLERS DOMINANT" if red >= 6 and net < 0 else "MIXED / CONTESTED"
+                st.write(f"**{story}** · {green} bullish closes / {red} bearish closes across the last {len(closed_story)} completed candles.")
+                st.caption("This is candle-derived pressure only. It is not exchange order flow or buyer/seller volume.")
+            else:
+                st.caption("Collecting completed candles for buyer/seller story.")
         structure = result.get("market_structure")
         if structure:
             st.markdown("**GHOST market structure**")
             st.info(
                 f'{structure.get("label", "ASSESSING")} — '
-                f'{structure.get("detail", "")}'
+                f'{structure.get("detail", "")}\n\n'
+                f'Swing sequence: {structure.get("swing_structure", "COLLECTING")}'
             )
 
         st.markdown("**Multi-Timeframe Session & Volatility Intelligence**")
-        mtf = session_intelligence(output.get("ticks"), output.get("candles"))
+        mtf = session_intelligence(output.get("ticks"), output.get("candles"), output.get("mtf_history"))
         mtf_cols = st.columns(4)
         for col, tf in zip(mtf_cols, ("15m", "1h", "4h", "1d")):
             item = mtf.get(tf, {})
             col.metric(tf, item.get("state", "COLLECTING"),
-                       delta=(f'{item["ratio"]:.2f}× average range' if item.get("ratio") is not None else None))
+                       delta=(f'{item.get("trend", "MIXED")} · {item["ratio"]:.2f}× range' if item.get("ratio") is not None else item.get("trend")))
+        mtf_errors = output.get("mtf_errors", {})
+        if mtf_errors:
+            st.caption("Some higher-timeframe history is still collecting: " + " · ".join(f"{k}: {v}" for k, v in mtf_errors.items()))
         activity = mtf.get("tick_activity")
         if activity:
             st.caption(f'Tick activity proxy: {activity["recent_per_min"]:.1f} ticks/min vs {activity["baseline_per_min"]:.1f} baseline · {activity["state"]}. This is tick frequency, NOT traded volume.')
+        st.markdown("### CANDLE BIBLE · CANDLESTICK INTELLIGENCE")
+        completed_for_context = output.get("candles").copy()
+        if completed_for_context is not None and not completed_for_context.empty:
+            completed_for_context["datetime"] = pd.to_datetime(completed_for_context["datetime"], utc=True)
+            completed_for_context = completed_for_context[completed_for_context.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
+        bible = candle_bible_analysis(completed_for_context)
+        st.write(f"**{bible['bias']}** · " + " · ".join(bible["patterns"]))
+        st.caption(bible["note"])
+
+        st.markdown("### HOMMA / SAKATA · CLASSICAL PATTERN CONTEXT")
+        sakata = homma_sakata_analysis(completed_for_context)
+        for observation in sakata["observations"]:
+            st.write("• " + observation)
+        st.caption(sakata["note"])
+
+        st.markdown("### SUPPORT / RESISTANCE MAP")
+        sr = support_resistance_analysis(completed_for_context)
+        sr_a, sr_b = st.columns(2)
+        sr_a.metric("NEAREST SUPPORT", fmt_price(sr.get("support")) if sr.get("support") is not None else "COLLECTING")
+        sr_b.metric("NEAREST RESISTANCE", fmt_price(sr.get("resistance")) if sr.get("resistance") is not None else "COLLECTING")
+        st.caption(sr["note"])
 
         if stage == "SETUP DEVELOPING":
             st.info("SETUP DEVELOPING — Candle 2 is still open. Its close must confirm; no directional signal is issued yet.")
@@ -1571,11 +1681,7 @@ else:
                 + datetime.fromisoformat(last_scan).strftime("%Y-%m-%d %H:%M:%S")
             )
     else:
-        render_ghost_candle_clock()
-        st.info(
-            "Press CONNECT & SCAN GHOST to connect to Deriv "
-            "and retrieve the first set of market data."
-        )
+        st.info("GHOST is standing by. Connect and scan to load live Deriv market data. No signal timer is shown while waiting.")
         last_error = st.session_state.get("deriv_scan_error")
         if last_error:
             st.warning(f"Most recent Deriv scan error: {last_error}")
@@ -1588,7 +1694,7 @@ else:
 st.divider()
 st.caption(
     "Research and demo alerting only — not financial advice. "
-    "GHOST 3.0 does not place trades. Deriv data and execution quotes "
+    "GHOST 3.2 does not place trades. Deriv data and execution quotes "
     "can differ. Confirm the live contract quote and timing. "
     "No signal guarantees a profitable outcome."
 )
