@@ -1,4 +1,4 @@
-# GHOST Protocol 3.0 Core Engine & Streamlit Dashboard
+# GHOST Protocol 3.0 - Native App UI & Core Engine
 
 import os
 import json
@@ -39,37 +39,125 @@ FOREX_PAIRS = [
 if STREAMLIT_AVAILABLE:
     st.set_page_config(
         page_title="GHOST Protocol 3.0",
-        page_icon="📈",
-        layout="wide"
+        page_icon="🛡️",
+        layout="centered",
+        initial_sidebar_state="collapsed"
     )
 
+    # Native App UI CSS Styling
     st.markdown("""
     <style>
-    .block-container {
-        padding-top: 1rem;
-        padding-bottom: 2rem;
-        max-width: 1450px;
-    }
-    [data-testid="stMetric"] {
-        background: #111827;
-        padding: 14px;
-        border-radius: 12px;
-        border: 1px solid #263244;
-    }
-    .signal-card {
-        padding: 18px 20px;
-        border-radius: 14px;
-        background: #111827;
-        border: 1px solid #334155;
-        margin: 8px 0;
-    }
-    .signal-call { border-left: 6px solid #16a34a; }
-    .signal-put { border-left: 6px solid #dc2626; }
-    .signal-wait { border-left: 6px solid #64748b; }
-    .small-muted {
-        color: #94a3b8;
-        font-size: 0.86rem;
-    }
+        /* Hide Streamlit Default Branding & Header */
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        
+        /* App Container & Background */
+        .stApp {
+            background-color: #080c14;
+            color: #f1f5f9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        .block-container {
+            padding: 1rem 0.75rem 3rem 0.75rem;
+            max-width: 480px; /* Mobile app framing width */
+        }
+        
+        /* Native App Header Bar */
+        .app-header {
+            background: linear-gradient(135deg, #111827 0%, #0f172a 100%);
+            border: 1px solid #1e293b;
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .app-title {
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: #34d399;
+            letter-spacing: 0.5px;
+            margin: 0;
+        }
+        .app-subtitle {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin: 2px 0 0 0;
+        }
+
+        /* Native App Cards */
+        .app-card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .card-label {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            color: #94a3b8;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        /* Status Badges */
+        .badge-ready {
+            background: rgba(22, 163, 74, 0.2);
+            border: 1px solid #16a34a;
+            color: #4ade80;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+        .badge-caution {
+            background: rgba(234, 179, 8, 0.2);
+            border: 1px solid #ca8a04;
+            color: #facc15;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+        .badge-unclear {
+            background: rgba(220, 38, 38, 0.2);
+            border: 1px solid #dc2626;
+            color: #f87171;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+        .badge-wait {
+            background: rgba(100, 116, 139, 0.2);
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            text-align: center;
+        }
+
+        /* Metric Grids */
+        .metric-value {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: #f8fafc;
+        }
+        .metric-sub {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -137,7 +225,7 @@ def analyze_buyer_seller_story(completed):
         control = "BUYERS"
         strength = "MODERATE"
         story = "Buyers show moderate pressure facing intermittent selling resistance."
-    elif bearish_count > bearish_count:
+    elif bearish_count > bullish_count:
         control = "SELLERS"
         strength = "MODERATE"
         story = "Sellers show moderate pressure with buyers attempting occasional recoveries."
@@ -467,117 +555,71 @@ def fetch_deriv_ticks(symbol, count=1000, client=None):
     return df.dropna(subset=["datetime", "close"]).sort_values("datetime", kind="stable").reset_index(drop=True)
 
 # ============================================================
-# STREAMLIT DASHBOARD UI
+# STREAMLIT NATIVE APP UI
 # ============================================================
 def main():
     if not STREAMLIT_AVAILABLE:
-        print("Streamlit is required to run the dashboard.")
+        print("Streamlit required.")
         return
 
-    st.title("🛡️ GHOST PROTOCOL 3.0 — MARKET SIGNAL DESK")
-    st.caption("Three-Step Staircase Engine • Buyer/Seller Story • Market Structure • Sakata Context")
+    # App Header Bar (Native Look)
+    st.markdown(f"""
+    <div class="app-header">
+        <div>
+            <p class="app-title">🛡️ GHOST PROTOCOL 3.0</p>
+            <p class="app-subtitle">Volatility 100 (1s) • Native Terminal</p>
+        </div>
+        <div style="text-align: right;">
+            <span style="font-size:0.7rem; color:#34d399; background:rgba(52,211,153,0.1); padding:4px 8px; border-radius:10px; border:1px solid rgba(52,211,153,0.3);">🟢 LIVE FEED</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    with st.sidebar:
-        st.header("Control Panel")
-        market_mode = st.selectbox("Market Feed", [GHOST_NAME, "Forex Engine (Twelve Data)"])
-        refresh_rate = st.slider("Auto-Refresh (seconds)", 2, 30, 5)
-        st.markdown("---")
-        st.markdown("### Decision States")
-        st.markdown("- `ENTRY READY` (Active Signal)\n- `CAUTION` (Risk Warnings)\n- `MARKET UNCLEAR` (Choppy)\n- `INVALIDATED` (Broken Setup)")
-
-    # Data fetching & analysis
+    # Fetch Data
     ticks = None
-    connection_status = "DISCONNECTED"
-    
-    if market_mode == GHOST_NAME:
-        try:
-            ticks = fetch_deriv_ticks(GHOST_SYMBOL, count=1200)
-            connection_status = "CONNECTED (DERIV WS)"
-        except Exception as e:
-            st.error(f"Deriv Connection Error: {e}")
-            connection_status = "FEED ERROR"
-    else:
-        st.info("Forex engine selected. Enter Twelve Data API key if querying live currency pairs.")
-        # Fallback empty or mock dataframe if key is missing
-        ticks = pd.DataFrame(columns=["datetime", "close"])
+    try:
+        ticks = fetch_deriv_ticks(GHOST_SYMBOL, count=800)
+    except Exception as e:
+        st.error(f"Connection Error: {e}")
 
     analysis = ghost_protocol(ticks)
+    state = analysis.get("state", "WAIT")
+    signal = analysis.get("signal", "WAIT")
+    price = analysis.get("price", 0)
 
-    # Top Metrics Bar
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Connection", connection_status)
-    with col2:
-        st.metric("Latest Price", fmt_price(analysis.get("price", 0)))
-    with col3:
-        st.metric("Decision State", analysis.get("state", "WAIT"))
-    with col4:
-        st.metric("Signal Action", analysis.get("signal", "WAIT"))
+    # Status Badge
+    badge_class = "badge-wait"
+    if state == "ENTRY READY":
+        badge_class = "badge-ready"
+    elif state == "CAUTION":
+        badge_class = "badge-caution"
+    elif state == "MARKET UNCLEAR" or state == "INVALIDATED":
+        badge_class = "badge-unclear"
 
-    st.markdown("---")
+    # App Summary Card
+    st.markdown(f"""
+    <div class="app-card" style="text-align: center; padding: 18px;">
+        <div class="card-label">Decision State & Action</div>
+        <div style="margin: 8px 0;">
+            <span class="{badge_class}">{state} ({signal})</span>
+        </div>
+        <div style="font-size: 1.8rem; font-weight: 800; color: #f8fafc; margin-top: 8px;">
+            {fmt_price(price)}
+        </div>
+        <div class="card-label" style="margin-top: 4px;">Live Market Price</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Main Dashboard Layout
-    left_col, right_col = st.columns([2, 1])
-
-    with left_col:
-        st.subheader("📊 Market Intelligence & Story")
-        
-        state = analysis.get("state", "WAIT")
-        reason = analysis.get("reason", "")
-        
-        if state == "ENTRY READY":
-            st.success(f"**ENTRY READY ({analysis.get('signal')})**: {reason}")
-        elif state == "CAUTION":
-            st.warning(f"**CAUTION WARNING**: {reason}")
-            for w in analysis.get("warnings", []):
-                st.write(f"- ⚠️ {w}")
-        elif state == "MARKET UNCLEAR":
-            st.warning(f"**MARKET UNCLEAR**: {reason}")
-        elif state == "INVALIDATED":
-            st.error(f"**INVALIDATED**: {reason}")
-        else:
-            st.info(f"**Status [{state}]**: {reason}")
-
-        # Buyer/Seller Story Card
-        bs = analysis.get("buyer_seller", {})
+    # Mini Metrics Row
+    c1, c2 = st.columns(2)
+    with c1:
         st.markdown(f"""
-        <div class="signal-card">
-            <h4>🧠 Buyer / Seller Behaviour Story</h4>
-            <p><b>Dominant Control:</b> {bs.get('control', 'Analyzing...')}</p>
-            <p class="small-muted">{bs.get('story', 'Awaiting candle metrics.')}</p>
+        <div class="app-card">
+            <div class="card-label">Entry Reference</div>
+            <div class="metric-value">{fmt_price(analysis.get('entry_point', 0))}</div>
+            <div class="metric-sub">C1 Close Level</div>
         </div>
         """, unsafe_allow_html=True)
-
-        # Market Structure & Sakata Context
-        ms = analysis.get("market_structure", {})
+    with c2:
         st.markdown(f"""
-        <div class="signal-card">
-            <h4>🏗️ Market Structure & Context</h4>
-            <p><b>Trend / Bias:</b> {ms.get('trend', 'SIDEWAYS')} ({ms.get('label', '')})</p>
-            <p class="small-muted">{ms.get('detail', '')}</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        sakata = analysis.get("sakata_observations", [])
-        if sakata:
-            st.markdown("**Sakata / Homma Context Observations:**")
-            for obs in sakata:
-                st.write(f"- 📌 {obs}")
-
-    with right_col:
-        st.subheader("⚙️ Staircase Parameters")
-        st.write(f"**Entry Reference (C1 Close):** {fmt_price(analysis.get('entry_point', 0))}")
-        st.write(f"**Identified Pattern:** {analysis.get('pattern', 'Scanning...')}")
-        st.write(f"**Tick Age:** {analysis.get('tick_age', 0):.1f}s")
-        
-        st.markdown("---")
-        st.markdown("### Live Chart Preview")
-        if ticks is not None and not ticks.empty:
-            fig = go.Figure(go.Scatter(x=ticks["datetime"].tail(100), y=ticks["close"].tail(100), mode="lines", line=dict(color="#34d399", width=2)))
-            fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#111827", plot_bgcolor="#111827", font=dict(color="#f8fafc"))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.write("Awaiting live tick stream...")
-
-if __name__ == "__main__":
-    main()
+        <div class="app-card">
