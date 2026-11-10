@@ -1,5 +1,3 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Tested & Fixed Syntax)
-
 import os
 import json
 import time
@@ -7,164 +5,235 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 import requests
-
-try:
-    import streamlit as st
-    STREAMLIT_AVAILABLE = True
-except ImportError:
-    STREAMLIT_AVAILABLE = False
+import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
 
 try:
     import websocket
-    WEBSOCKET_AVAILABLE = True
 except ImportError:
     websocket = None
-    WEBSOCKET_AVAILABLE = False
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
 TZ = ZoneInfo("Africa/Lusaka")
 DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public"
+
 GHOST_SYMBOL = "1HZ100V"
 GHOST_NAME = "Volatility 100 (1s) Index"
 
-if STREAMLIT_AVAILABLE:
-    st.set_page_config(
-        page_title="GHOST Protocol 3.0 Terminal",
-        page_icon="🛡️",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
+FOREX_PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
+    "AUD/USD", "USD/CAD", "NZD/USD", "EUR/GBP",
+    "EUR/JPY", "GBP/JPY"
+]
 
-    st.markdown("""
-    <style>
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        header {visibility: hidden;}
-        
-        html, body, [data-testid="stAppViewContainer"] {
-            background-color: #06090f;
-            color: #f1f5f9;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            overflow: hidden !important;
-            height: 100vh;
-        }
-        
-        .block-container {
-            padding: 0.4rem 0.8rem !important;
-            max-width: 100% !important;
-            height: 100vh;
-            overflow: hidden !important;
-            display: flex;
-            flex-direction: column;
-        }
+st.set_page_config(
+    page_title="GHOST Protocol 3.0",
+    page_icon="📡",
+    layout="wide"
+)
 
-        .term-header {
-            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-            border: 1px solid #334155;
-            border-radius: 10px;
-            padding: 6px 14px;
-            margin-bottom: 5px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .term-title {
-            font-size: 0.95rem;
-            font-weight: 800;
-            color: #34d399;
-            margin: 0;
-            letter-spacing: 0.5px;
-        }
-        
-        .live-clock-pad {
-            font-family: monospace;
-            font-size: 1.15rem;
-            font-weight: 800;
-            color: #34d399;
-            background: rgba(15, 23, 42, 0.9);
-            border: 1px solid #334155;
-            padding: 4px 14px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(52, 211, 153, 0.2);
-        }
+st.markdown("""
+<style>
+.block-container {
+    padding-top: 1.2rem;
+    padding-bottom: 2rem;
+    max-width: 1450px;
+}
+[data-testid="stMetric"] {
+    background: #111827;
+    padding: 14px;
+    border-radius: 12px;
+    border: 1px solid #263244;
+}
+.signal-card {
+    padding: 18px 20px;
+    border-radius: 14px;
+    background: #111827;
+    border: 1px solid #334155;
+    margin: 8px 0;
+}
+.signal-call { border-left: 6px solid #16a34a; }
+.signal-put { border-left: 6px solid #dc2626; }
+.signal-wait { border-left: 6px solid #64748b; }
+.small-muted {
+    color: #94a3b8;
+    font-size: 0.86rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
-        .term-card {
-            background: #0f172a;
-            border: 1px solid #1e293b;
-            border-radius: 8px;
-            padding: 8px 10px;
-            margin-bottom: 5px;
-        }
-        .card-label {
-            font-size: 0.62rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #94a3b8;
-            font-weight: 700;
-            margin-bottom: 2px;
-        }
+st.title("👻 GHOST PROTOCOL 3.0")
+st.caption(
+    "Merged intelligence edition · Deriv live market data · Forex THREE STEPS · CAT"
+)
 
-        .big-time-pad {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 8px;
-            padding: 8px 10px;
-            text-align: center;
-        }
-        .big-time-val {
-            font-size: 1.35rem;
-            font-weight: 800;
-            font-family: monospace;
-            margin: 2px 0;
-        }
-        .big-time-lbl {
-            font-size: 0.62rem;
-            font-weight: 700;
-            color: #94a3b8;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-        }
 
-        .badge-ready {
-            background: rgba(22, 163, 74, 0.25);
-            border: 1px solid #16a34a;
-            color: #4ade80;
-            padding: 4px 10px;
-            border-radius: 10px;
-            font-weight: 800;
-            font-size: 0.8rem;
-        }
-        .badge-caution {
-            background: rgba(234, 179, 8, 0.25);
-            border: 1px solid #ca8a04;
-            color: #facc15;
-            padding: 4px 10px;
-            border-radius: 10px;
-            font-weight: 800;
-            font-size: 0.8rem;
-        }
-        .badge-unclear {
-            background: rgba(220, 38, 38, 0.25);
-            border: 1px solid #dc2626;
-            color: #f87171;
-            padding: 4px 10px;
-            border-radius: 10px;
-            font-weight: 800;
-            font-size: 0.8rem;
-        }
-        .badge-wait {
-            background: rgba(100, 116, 139, 0.25);
-            border: 1px solid #475569;
-            color: #cbd5e1;
-            padding: 4px 10px;
-            border-radius: 10px;
-            font-weight: 800;
-            font-size: 0.8rem;
-        }
-    </style>
-    """, unsafe_allow_html=True)
+
+def render_ghost_candle_clock(latest_tick=None):
+    """
+    Render a browser-side UTC minute clock. Its digits update every 100 ms,
+    independently of Streamlit reruns. Candle boundaries follow UTC minute
+    boundaries, matching the app's 1-minute tick resampling.
+    """
+    now_epoch = time.time()
+    tick_epoch = None
+    if latest_tick is not None:
+        try:
+            tick_epoch = pd.Timestamp(latest_tick).timestamp()
+        except Exception:
+            tick_epoch = None
+
+    if tick_epoch is not None:
+        candle_start = int(tick_epoch // 60) * 60
+        feed_age = max(0.0, now_epoch - tick_epoch)
+        # Only trust the feed's candle anchor while the latest tick is fresh.
+        if feed_age <= 8:
+            target_epoch = candle_start + 60
+            clock_source = "DERIV TICK TIMESTAMP"
+            feed_state = "LIVE FEED"
+        else:
+            target_epoch = int(now_epoch // 60) * 60 + 60
+            clock_source = "LOCAL UTC FALLBACK"
+            feed_state = f"FEED DELAYED · LAST TICK {feed_age:.1f}s AGO"
+    else:
+        target_epoch = int(now_epoch // 60) * 60 + 60
+        clock_source = "UTC CLOCK · WAITING FOR DERIV TICKS"
+        feed_state = "WAITING FOR LIVE FEED"
+
+    html = f"""
+    <div id="ghost-clock" style="font-family:Arial,sans-serif;background:#101827;
+        color:#f8fafc;border:1px solid #334155;border-radius:16px;padding:18px 16px;
+        text-align:center;">
+      <div style="font-size:12px;letter-spacing:2px;color:#9ca3af;font-weight:700;">
+        GHOST · LIVE CANDLE CLOCK
+      </div>
+      <div id="ghost-time" style="font-size:clamp(54px,10vw,82px);line-height:1.12;
+          font-weight:800;font-variant-numeric:tabular-nums;color:#34d399;margin:8px 0;">
+        00:00
+      </div>
+      <div id="ghost-label" style="font-size:14px;color:#cbd5e1;">
+        seconds until the next 1-minute candle
+      </div>
+      <div style="display:flex;justify-content:center;gap:10px;align-items:center;
+          flex-wrap:wrap;margin-top:14px;">
+        <span id="ghost-feed" style="font-size:11px;color:#a7f3d0;
+          border:1px solid #365b51;border-radius:20px;padding:5px 9px;">
+          {feed_state}
+        </span>
+        <button id="ghost-sound" type="button" style="border:1px solid #64748b;
+          background:#263449;color:#fff;border-radius:20px;padding:7px 12px;
+          font-size:12px;font-weight:700;">
+          🔔 ENABLE SOUND
+        </button>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:10px;">
+        {clock_source} · Alerts at 10 seconds and candle change
+      </div>
+    </div>
+    <script>
+    (() => {{
+      const targetAtLoad = {target_epoch * 1000};
+      const serverAtLoad = {now_epoch * 1000};
+      const clientAtLoad = Date.now();
+      const targetClient = targetAtLoad + (clientAtLoad - serverAtLoad);
+      const feedEl = document.getElementById("ghost-feed");
+      const timeEl = document.getElementById("ghost-time");
+      const labelEl = document.getElementById("ghost-label");
+      const soundBtn = document.getElementById("ghost-sound");
+      const storageKey = "ghost_candle_sound_enabled";
+      let enabled = false;
+      try {{ enabled = localStorage.getItem(storageKey) === "yes"; }} catch(e) {{}}
+      soundBtn.textContent = enabled ? "🔔 SOUND ON" : "🔔 ENABLE SOUND";
+
+      let audioCtx = null;
+      function beep(freq, duration) {{
+        if (!enabled || !audioCtx) return;
+        try {{
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.16, audioCtx.currentTime + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.start(); osc.stop(audioCtx.currentTime + duration + 0.03);
+        }} catch(e) {{}}
+      }}
+      soundBtn.addEventListener("click", () => {{
+        enabled = !enabled;
+        try {{ localStorage.setItem(storageKey, enabled ? "yes" : "no"); }} catch(e) {{}}
+        if (enabled) {{
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (AudioContextClass) {{
+            audioCtx = new AudioContextClass();
+            if (audioCtx.state === "suspended") audioCtx.resume();
+            beep(880, 0.12);
+          }}
+          soundBtn.textContent = "🔔 SOUND ON";
+        }} else {{
+          soundBtn.textContent = "🔔 ENABLE SOUND";
+        }}
+      }});
+
+      const minuteKey = "ghost_last_candle_alert";
+      let lastTenKey = "";
+      let lastBoundaryKey = "";
+      function updateClock() {{
+        const now = Date.now();
+        const remainingMs = targetClient - now;
+        const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
+        const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+        const ss = String(remaining % 60).padStart(2, "0");
+        timeEl.textContent = mm + ":" + ss;
+        labelEl.textContent = remaining > 0
+          ? "seconds until the next 1-minute candle"
+          : "new candle boundary reached";
+        timeEl.style.color = remaining <= 10 ? "#fbbf24" : "#34d399";
+
+        const thisMinute = Math.floor(now / 60000);
+        const tenKey = String(thisMinute) + ":10";
+        if (remaining === 10 && lastTenKey !== tenKey) {{
+          lastTenKey = tenKey;
+          beep(660, 0.18);
+        }}
+        if (remaining === 0) {{
+          const boundaryKey = String(Math.floor(targetClient / 60000));
+          if (lastBoundaryKey !== boundaryKey) {{
+            lastBoundaryKey = boundaryKey;
+            beep(990, 0.28);
+          }}
+        }}
+      }}
+      updateClock();
+      setInterval(updateClock, 100);
+    }})();
+    </script>
+    """
+    components.html(html, height=225, scrolling=False)
+
+
+# ============================================================
+# SHARED HELPERS
+# ============================================================
+
+def now_cat():
+    return datetime.now(TZ)
+
+
+def as_cat(value):
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    return ts.tz_convert("Africa/Lusaka")
+
 
 def fmt_price(value):
     try:
@@ -173,329 +242,1353 @@ def fmt_price(value):
         return "Unavailable"
     if not pd.notna(number):
         return "Unavailable"
-    return f"{number:.2f}" if abs(number) < 1000 else f"{number:.2f}"
+    return f"{number:.5f}" if abs(number) < 100 else f"{number:.3f}"
 
-def blank_result(reason, state="WAIT"):
+
+def blank_result(reason):
     return {
         "signal": "WAIT",
-        "state": state,
         "reason": reason
     }
 
-def analyze_buyer_seller_story(completed):
-    if completed is None or len(completed) < 3:
-        return {"control": "NEUTRAL", "story": "Accumulating candles."}
-    tail = completed.tail(5).reset_index(drop=True)
-    bullish = sum(tail.close > tail.open)
-    bearish = sum(tail.close < tail.open)
-    if bullish >= 3:
-        return {"control": "BUYERS", "story": "Buyers maintain upward control."}
-    elif bearish >= 3:
-        return {"control": "SELLERS", "story": "Sellers maintain downward momentum."}
-    return {"control": "BALANCED", "story": "Buyers and sellers balanced."}
 
-def detect_choppy_market(completed):
-    if completed is None or len(completed) < 5:
-        return False, "Orderly."
-    tail = completed.tail(6).reset_index(drop=True)
-    dirs = (tail.close > tail.open).astype(int).tolist()
-    alt = sum(1 for i in range(1, len(dirs)) if dirs[i] != dirs[i-1])
-    if alt >= 3:
-        return True, "High candle alternation detected (choppy)."
-    return False, "Orderly."
+def get_secret_api_key():
+    """Read the optional Twelve Data key without crashing if Secrets is absent."""
+    try:
+        secret_value = st.secrets.get("TWELVE_DATA_API_KEY", "")
+    except Exception:
+        secret_value = ""
+    return secret_value or os.getenv("TWELVE_DATA_API_KEY", "")
 
-def analyze_market_structure(completed):
-    if completed is None or len(completed) < 5:
-        return {"trend": "SIDEWAYS", "detail": "Building structure."}
-    net = completed.close.iloc[-1] - completed.open.iloc[0]
-    if net > 0:
-        return {"trend": "BULLISH", "detail": "Higher close sequence active."}
-    elif net < 0:
-        return {"trend": "BEARISH", "detail": "Lower close sequence active."}
-    return {"trend": "SIDEWAYS", "detail": "Ranging market structure."}
 
-def ghost_protocol(ticks, now_cat=None):
-    if ticks is None or ticks.empty:
-        return blank_result("Waiting for tick data.", "WAIT")
-        
-    latest_price = float(ticks.close.iloc[-1])
-    if now_cat is None:
-        now_cat = datetime.now(TZ)
-        
-    latest_tick = pd.Timestamp(ticks.datetime.iloc[-1])
-    latest_tick_cat = latest_tick.tz_convert(TZ) if latest_tick.tzinfo else latest_tick.tz_localize("UTC").tz_convert(TZ)
-    tick_age = (now_cat - latest_tick_cat).total_seconds()
-    
-    base = {"signal": "WAIT", "state": "WAIT", "reason": "Scanning setup.", "price": latest_price}
-    if tick_age > 35 or tick_age < -15:
-        return {**base, "state": "FEED CHECK", "reason": f"Feed stale ({tick_age:.1f}s)."}
-        
-    ticks_cat = ticks.copy()
-    ticks_cat["datetime"] = ticks_cat["datetime"].dt.tz_convert(TZ) if ticks_cat["datetime"].dt.tz else ticks_cat["datetime"].dt.tz_localize("UTC").dt.tz_convert(TZ)
-    
-    series = ticks_cat.set_index("datetime")["close"].sort_index(kind="stable")
-    candles = series.resample("1min").ohlc().dropna().reset_index()
-    if len(candles) < 3:
-        return {**base, "state": "WAIT", "reason": "Collecting 1-min history."}
-        
-    current_minute = now_cat.replace(second=0, microsecond=0)
-    completed = candles[candles.datetime < current_minute].reset_index(drop=True)
-    if completed.empty:
-        completed = candles.tail(3).reset_index(drop=True)
-        
-    is_choppy, chop_reason = detect_choppy_market(completed)
-    bs = analyze_buyer_seller_story(completed)
-    ms = analyze_market_structure(completed)
-    
-    base.update({"buyer_seller": bs, "market_structure": ms, "is_choppy": is_choppy})
-    
-    next_minute = current_minute + timedelta(minutes=1)
-    expiry_target = next_minute + timedelta(minutes=1)
-    prep_seconds = max(0, int(60 - now_cat.second))
+# ============================================================
+# FOREX ENGINE — THREE STEPS
+# ============================================================
 
-    base.update({
-        "entry_time": next_minute.strftime("%H:%M:%S"),
-        "expiry_time": expiry_target.strftime("%H:%M:%S"),
-        "prep_countdown": prep_seconds
+def fetch_forex(symbol, key, count):
+    response = requests.get(
+        "https://api.twelvedata.com/time_series",
+        params={
+            "symbol": symbol,
+            "interval": "1min",
+            "outputsize": count + 3,
+            "apikey": key,
+            "format": "JSON",
+            "timezone": "UTC"
+        },
+        timeout=20
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if "values" not in payload:
+        raise RuntimeError(
+            payload.get("message", "Twelve Data returned no candles")
+        )
+
+    df = pd.DataFrame(payload["values"])
+    for column in ["open", "high", "low", "close"]:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    df["datetime"] = pd.to_datetime(
+        df["datetime"], utc=True, errors="coerce"
+    )
+
+    df = (
+        df.dropna(subset=["datetime", "open", "high", "low", "close"])
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+
+    cutoff = pd.Timestamp.now(tz="UTC").floor("min")
+    return (
+        df[df.datetime < cutoff]
+        .tail(count)
+        .reset_index(drop=True)
+    )
+
+
+def confirmed_pivots(df, strength):
+    highs, lows = [], []
+    high_values = df.high.to_numpy()
+    low_values = df.low.to_numpy()
+
+    for i in range(strength, len(df) - strength):
+        high_window = high_values[i-strength:i+strength+1]
+        low_window = low_values[i-strength:i+strength+1]
+
+        if (
+            high_values[i] == high_window.max()
+            and (high_window == high_values[i]).sum() == 1
+        ):
+            highs.append((i, float(high_values[i])))
+
+        if (
+            low_values[i] == low_window.min()
+            and (low_window == low_values[i]).sum() == 1
+        ):
+            lows.append((i, float(low_values[i])))
+
+    return highs, lows
+
+
+def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
+    if len(df) < 50:
+        return blank_result("Waiting for enough completed candles.")
+
+    highs, lows = confirmed_pivots(df, strength)
+    hs = highs[-min_steps:]
+    ls = lows[-min_steps:]
+
+    if len(hs) < min_steps or len(ls) < min_steps:
+        return blank_result("Waiting for confirmed swing structure.")
+
+    bullish = (
+        all(hs[i][1] > hs[i-1][1] for i in range(1, len(hs)))
+        and all(ls[i][1] > ls[i-1][1] for i in range(1, len(ls)))
+    )
+    bearish = (
+        all(hs[i][1] < hs[i-1][1] for i in range(1, len(hs)))
+        and all(ls[i][1] < ls[i-1][1] for i in range(1, len(ls)))
+    )
+
+    close = df.close
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    middle = close.rolling(20).mean()
+    deviation = close.rolling(20).std()
+
+    last = df.iloc[-1]
+    previous = df.iloc[-2]
+    median_range = float((df.high - df.low).tail(20).median())
+    extension = abs(float(last.close - ema9.iloc[-1]))
+
+    tail = df.tail(12)
+    move = float(tail.high.max() - tail.low.min())
+    recent_pullback = (
+        float(tail.high.max() - tail.close.iloc[-1])
+        if bullish
+        else float(tail.close.iloc[-1] - tail.low.min())
+    )
+    pullback_ok = (
+        move <= 0
+        or recent_pullback <= move * (pullback_pct / 100)
+    )
+    late = median_range > 0 and extension > 2.5 * median_range
+
+    call = (
+        bullish
+        and ema9.iloc[-1] > ema21.iloc[-1]
+        and last.close > middle.iloc[-1]
+        and last.close > previous.high
+        and pullback_ok
+        and not late
+    )
+    put = (
+        bearish
+        and ema9.iloc[-1] < ema21.iloc[-1]
+        and last.close < middle.iloc[-1]
+        and last.close < previous.low
+        and pullback_ok
+        and not late
+    )
+
+    signal = "CALL" if call else "PUT" if put else "WAIT"
+    reason = (
+        "Confirmed higher highs and higher lows with upward resumption."
+        if call else
+        "Confirmed lower highs and lower lows with downward resumption."
+        if put else
+        "No fresh confirmed staircase entry. Wait; do not chase."
+    )
+
+    return {
+        "signal": signal,
+        "reason": reason,
+        "price": float(last.close),
+        "candle_time": last.datetime,
+        "ema9": float(ema9.iloc[-1]),
+        "ema21": float(ema21.iloc[-1]),
+        "upper": float((middle + 2 * deviation).iloc[-1]),
+        "lower": float((middle - 2 * deviation).iloc[-1]),
+        "highs": hs,
+        "lows": ls
+    }
+
+
+# ============================================================
+# DERIV PUBLIC WEBSOCKET CLIENT
+# ============================================================
+
+class DerivClient:
+    def __init__(self, timeout=20):
+        if websocket is None:
+            raise RuntimeError(
+                "Install websocket-client before connecting to Deriv."
+            )
+        self.timeout = timeout
+        self.ws = None
+        self.req_id = 0
+        self.last_activity = time.monotonic()
+        self.connect()
+
+    def connect(self):
+        self.close()
+        try:
+            self.ws = websocket.create_connection(
+                DERIV_PUBLIC_WS,
+                timeout=self.timeout
+            )
+            self.ws.settimeout(self.timeout)
+            self.last_activity = time.monotonic()
+        except Exception as exc:
+            raise RuntimeError(f"Could not connect to Deriv: {exc}")
+
+    def close(self):
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+        self.ws = None
+
+    def request(self, payload):
+        if self.ws is None:
+            self.connect()
+
+        self.req_id += 1
+        request = dict(payload)
+        request["req_id"] = self.req_id
+        self.ws.send(json.dumps(request))
+
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            raw = self.ws.recv()
+            if not raw:
+                continue
+
+            message = json.loads(raw)
+            self.last_activity = time.monotonic()
+
+            if message.get("error"):
+                error = message["error"]
+                raise RuntimeError(
+                    error.get("message", "Deriv API error")
+                )
+
+            if message.get("req_id") == self.req_id:
+                return message
+
+        raise TimeoutError(
+            "Deriv did not respond before the request timed out."
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+
+# ============================================================
+# DERIV SYMBOL DISCOVERY AND TICK HISTORY
+# ============================================================
+
+def deriv_symbols(client):
+    data = client.request({"active_symbols": "brief"})
+    raw_symbols = data.get("active_symbols", [])
+    normalized = []
+
+    for item in raw_symbols:
+        row = dict(item)
+        symbol = (
+            row.get("underlying_symbol")
+            or row.get("symbol")
+            or ""
+        )
+        name = (
+            row.get("underlying_symbol_name")
+            or row.get("display_name")
+            or row.get("name")
+            or symbol
+        )
+        if symbol:
+            row["symbol"] = symbol
+            row["display_name"] = name
+            normalized.append(row)
+
+    return normalized
+
+
+def fetch_deriv_ticks(symbol, count=4500, client=None):
+    if client is None:
+        with DerivClient(timeout=25) as temporary:
+            return fetch_deriv_ticks(symbol, count, temporary)
+
+    data = client.request({
+        "ticks_history": symbol,
+        "adjust_start_time": 1,
+        "count": count,
+        "end": "latest",
+        "style": "ticks"
     })
 
-    if is_choppy:
-        return {**base, "signal": "WAIT", "state": "MARKET UNCLEAR", "reason": chop_reason}
-        
-    if len(completed) >= 3:
-        c1 = completed.iloc[-2]
-        c2 = completed.iloc[-1]
-        prev_c1 = completed.iloc[-3]
-        
-        o, h, l, c = float(c1.open), float(c1.high), float(c1.low), float(c1.close)
-        pc = float(prev_c1.close)
-        
-        direction = "CALL" if c > pc else "PUT" if c < pc else None
-        if direction:
-            c1_close = float(c1.close)
-            c2_close = float(c2.close)
-            c2_confirmed = (c2_close > c1_close) if direction == "CALL" else (c2_close < c1_close)
-            price_valid = (latest_price > c1_close) if direction == "CALL" else (latest_price < c1_close)
-            
-            c1_time = pd.Timestamp(c1.datetime)
-            signal_entry = c1_time + timedelta(minutes=2)
-            signal_expiry = signal_entry + timedelta(minutes=1)
-            
-            base.update({
-                "entry_time": signal_entry.strftime("%H:%M:%S"),
-                "expiry_time": signal_expiry.strftime("%H:%M:%S"),
-            })
+    history = data.get("history", {})
+    prices = history.get("prices", [])
+    times = history.get("times", [])
 
-            if not c2_confirmed or not price_valid:
-                return {
-                    **base, 
-                    "signal": "WAIT", 
-                    "state": "INVALIDATED", 
-                    "reason": "C2 close or C3 price validation failed.", 
-                    "entry_point": c1_close, 
-                    "pattern": "Staircase Step"
-                }
-                
+    if not prices or not times or len(prices) != len(times):
+        raise RuntimeError("Deriv returned insufficient tick history.")
+
+    df = pd.DataFrame({
+        "datetime": pd.to_datetime(times, unit="s", utc=True),
+        "close": pd.to_numeric(prices, errors="coerce")
+    })
+
+    # Keep multiple ticks sharing the same second: they may contain
+    # important intrasecond price movement for OHLC construction.
+    df = (
+        df.dropna(subset=["datetime", "close"])
+        .sort_values("datetime", kind="stable")
+        .reset_index(drop=True)
+    )
+
+    if len(df) < 900:
+        raise RuntimeError(
+            "Not enough tick history for multi-timeframe analysis."
+        )
+
+    return df
+
+
+# ============================================================
+# GHOST CANDLE CONSTRUCTION
+# ============================================================
+
+def ticks_to_candles(ticks):
+    series = (
+        ticks.set_index("datetime")["close"]
+        .sort_index(kind="stable")
+    )
+    candles = series.resample("1min").ohlc()
+    return candles.dropna().reset_index()
+
+
+def aggregate_timeframe(one_minute, minutes):
+    data = one_minute.set_index("datetime")
+    result = data.resample(
+        f"{minutes}min",
+        label="left",
+        closed="left"
+    ).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last"
+    }).dropna().reset_index()
+
+    now = pd.Timestamp.now(tz="UTC").floor("min")
+    result = result[
+        result.datetime + pd.Timedelta(minutes=minutes) <= now
+    ]
+    return result.reset_index(drop=True)
+
+
+def session_intelligence(ticks, one_minute):
+    """Measure candle-range and tick-activity context; tick count is NOT volume."""
+    result = {}
+    if one_minute is None or one_minute.empty:
+        return result
+    now_utc = pd.Timestamp.now(tz="UTC")
+    completed_1m = one_minute.copy()
+    completed_1m["datetime"] = pd.to_datetime(completed_1m["datetime"], utc=True)
+    completed_1m = completed_1m[completed_1m.datetime + pd.Timedelta(minutes=1) <= now_utc]
+    if completed_1m.empty:
+        return result
+    for label, minutes in (("15m", 15), ("1h", 60), ("4h", 240), ("1d", 1440)):
+        bars = aggregate_timeframe(completed_1m, minutes)
+        if bars.empty:
+            result[label] = {"bars": 0, "range": None, "average": None, "state": "COLLECTING"}
+            continue
+        bars = bars.copy()
+        bars["range"] = bars.high - bars.low
+        latest = float(bars.range.iloc[-1])
+        baseline = float(bars.range.tail(20).mean())
+        ratio = latest / baseline if baseline > 0 else 1.0
+        state = "EXPANDING" if ratio >= 1.35 else "CONTRACTING" if ratio <= 0.70 else "NORMAL"
+        result[label] = {"bars": len(bars), "range": latest, "average": baseline, "ratio": ratio, "state": state}
+    # Activity proxy: number of received ticks per completed minute. Not exchange volume.
+    if ticks is not None and not ticks.empty:
+        tick_data = ticks.copy()
+        tick_data["datetime"] = pd.to_datetime(tick_data["datetime"], utc=True)
+        counts = tick_data.set_index("datetime").resample("1min").size()
+        counts = counts[counts.index + pd.Timedelta(minutes=1) <= now_utc]
+        if not counts.empty:
+            recent = float(counts.tail(15).mean())
+            baseline = float(counts.tail(120).mean())
+            result["tick_activity"] = {"recent_per_min": recent, "baseline_per_min": baseline,
+                "state": "ABOVE BASELINE" if recent > baseline * 1.25 else "BELOW BASELINE" if recent < baseline * 0.75 else "NORMAL"}
+        # Hour-of-day CAT profile from observed ticks; descriptive only.
+        local = tick_data.datetime.dt.tz_convert("Africa/Lusaka")
+        hourly = pd.DataFrame({"hour": local.dt.hour, "tick": 1}).groupby("hour").tick.sum()
+        result["hour_profile"] = {int(k): int(v) for k, v in hourly.items()}
+    return result
+
+
+# ============================================================
+# GHOST THREE-STEP STAIRCASE STRATEGY
+# ============================================================
+
+def identify_candle_one(candle, previous):
+    """Identify a directional first step from rejection, breakout, or close progression."""
+    o = float(candle.open)
+    h = float(candle.high)
+    l = float(candle.low)
+    c = float(candle.close)
+    previous_high = float(previous.high)
+    previous_low = float(previous.low)
+    previous_close = float(previous.close)
+
+    candle_range = max(h - l, 1e-12)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    close_position = (c - l) / candle_range
+
+    # Rejection has priority because it can signal a reversal regardless
+    # of the candle body colour.
+    bullish_rejection = (
+        lower_wick >= max(upper_wick * 1.25, candle_range * 0.25)
+        and close_position >= 0.55
+    )
+    bearish_rejection = (
+        upper_wick >= max(lower_wick * 1.25, candle_range * 0.25)
+        and close_position <= 0.45
+    )
+
+    if bullish_rejection:
+        return "CALL", "SUPPORT REJECTION"
+    if bearish_rejection:
+        return "PUT", "RESISTANCE REJECTION"
+    if c > previous_high:
+        return "CALL", "BULLISH BREAKOUT"
+    if c < previous_low:
+        return "PUT", "BEARISH BREAKOUT"
+    if c > previous_close:
+        return "CALL", "BULLISH DIRECTIONAL STEP"
+    if c < previous_close:
+        return "PUT", "BEARISH DIRECTIONAL STEP"
+    return None, "NO CLEAR FIRST STEP"
+
+
+def assess_candle3_risk(completed, direction, c2, latest_price):
+    """Return soft Candle 3 risk warnings; never overrides hard staircase rules."""
+    warnings = []
+    o = float(c2.open)
+    h = float(c2.high)
+    l = float(c2.low)
+    c = float(c2.close)
+    candle_range = max(h - l, 1e-12)
+    body = abs(c - o)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+
+    if body / candle_range <= 0.15:
+        warnings.append(
+            "Candle 2 is an indecision candle (small body relative to its range)."
+        )
+
+    if direction == "CALL":
+        if upper_wick >= max(body * 1.5, candle_range * 0.35):
+            warnings.append(
+                "Candle 2 has a notable upper rejection wick against the bullish move."
+            )
+        prior = completed.iloc[:-2].tail(12)
+        if not prior.empty:
+            resistance = float(prior.high.max())
+            distance = resistance - float(latest_price)
+            if 0 <= distance <= candle_range:
+                warnings.append(
+                    "Price is within one Candle 2 range of a recent high "
+                    f"({fmt_price(resistance)}), which may act as resistance."
+                )
+    else:
+        if lower_wick >= max(body * 1.5, candle_range * 0.35):
+            warnings.append(
+                "Candle 2 has a notable lower rejection wick against the bearish move."
+            )
+        prior = completed.iloc[:-2].tail(12)
+        if not prior.empty:
+            support = float(prior.low.min())
+            distance = float(latest_price) - support
+            if 0 <= distance <= candle_range:
+                warnings.append(
+                    "Price is within one Candle 2 range of a recent low "
+                    f"({fmt_price(support)}), which may act as support."
+                )
+
+    return warnings
+
+
+def analyze_market_structure(completed):
+    """
+    Describe recent price structure for context only.
+    This analysis never creates or invalidates a staircase entry by itself.
+    """
+    if completed is None or len(completed) < 8:
+        return {
+            "label": "BUILDING MARKET HISTORY",
+            "detail": "More completed candles are needed to assess recent structure.",
+            "opposing_pressure": None,
+            "recent_direction": "MIXED",
+            "prior_impulse": "MIXED"
+        }
+
+    data = completed.tail(8).reset_index(drop=True)
+    prior = data.iloc[:5]
+    recent = data.iloc[5:]
+
+    prior_move = float(prior.close.iloc[-1]) - float(prior.open.iloc[0])
+    recent_move = float(recent.close.iloc[-1]) - float(recent.open.iloc[0])
+
+    prior_direction = (
+        "BULLISH" if prior_move > 0
+        else "BEARISH" if prior_move < 0
+        else "MIXED"
+    )
+
+    recent_closes = recent.close.astype(float).tolist()
+    rising_steps = sum(
+        recent_closes[i] > recent_closes[i - 1]
+        for i in range(1, len(recent_closes))
+    )
+    falling_steps = sum(
+        recent_closes[i] < recent_closes[i - 1]
+        for i in range(1, len(recent_closes))
+    )
+
+    recent_direction = (
+        "BULLISH" if rising_steps >= 2
+        else "BEARISH" if falling_steps >= 2
+        else "MIXED"
+    )
+
+    prior_high = float(prior.high.max())
+    prior_low = float(prior.low.min())
+    recent_high = float(recent.high.max())
+    recent_low = float(recent.low.min())
+
+    bearish_structure_break = (
+        recent_direction == "BEARISH" and recent_low < prior_low
+    )
+    bullish_structure_break = (
+        recent_direction == "BULLISH" and recent_high > prior_high
+    )
+
+    opposing_pressure = None
+    if prior_direction == "BULLISH" and recent_direction == "BEARISH":
+        opposing_pressure = "BEARISH"
+        label = (
+            "BULLISH IMPULSE — POSSIBLE BEARISH PULLBACK"
+            if not bearish_structure_break
+            else "BULLISH IMPULSE — BEARISH STRUCTURE BREAK"
+        )
+        detail = (
+            "The earlier candles advanced upward, but the latest candles "
+            "are moving down. A break below the earlier swing-low area "
+            "suggests stronger bearish pressure; without that break, this "
+            "may still be only a pullback."
+        )
+    elif prior_direction == "BEARISH" and recent_direction == "BULLISH":
+        opposing_pressure = "BULLISH"
+        label = (
+            "BEARISH IMPULSE — POSSIBLE BULLISH PULLBACK"
+            if not bullish_structure_break
+            else "BEARISH IMPULSE — BULLISH STRUCTURE BREAK"
+        )
+        detail = (
+            "The earlier candles advanced downward, but the latest candles "
+            "are moving up. A break above the earlier swing-high area "
+            "suggests stronger bullish pressure; without that break, this "
+            "may still be only a pullback."
+        )
+    elif recent_direction == "BULLISH":
+        label = "RECENT BULLISH PRESSURE"
+        detail = "Recent completed closes are generally stepping upward."
+    elif recent_direction == "BEARISH":
+        label = "RECENT BEARISH PRESSURE"
+        detail = "Recent completed closes are generally stepping downward."
+    else:
+        label = "RANGE / MIXED STRUCTURE"
+        detail = "Recent completed candles do not show a clear directional sequence."
+
+    return {
+        "label": label,
+        "detail": detail,
+        "opposing_pressure": opposing_pressure,
+        "recent_direction": recent_direction,
+        "prior_impulse": prior_direction,
+        "prior_high": prior_high,
+        "prior_low": prior_low,
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "structure_break": (
+            bearish_structure_break or bullish_structure_break
+        )
+    }
+
+
+def assess_market_structure_risk(structure, direction):
+    """Return a soft warning when recent structure presses against the setup."""
+    pressure = structure.get("opposing_pressure")
+    if direction == "CALL" and pressure == "BEARISH":
+        return [
+            "Recent market structure shows bearish pressure against this bullish setup. "
+            "Check whether the move is a pullback or a confirmed break of the prior swing low."
+        ]
+    if direction == "PUT" and pressure == "BULLISH":
+        return [
+            "Recent market structure shows bullish pressure against this bearish setup. "
+            "Check whether the move is a pullback or a confirmed break of the prior swing high."
+        ]
+    return []
+
+
+def ghost_protocol(ticks):
+    """Candle 1 identifies, Candle 2 prepares/confirms, Candle 3 is entry."""
+    if ticks is None or ticks.empty:
+        return {
+            "signal": "WAIT", "stage": "SCANNING",
+            "reason": "Waiting for Deriv tick data."
+        }
+
+    latest_price = float(ticks.close.iloc[-1])
+    now = pd.Timestamp.now(tz="UTC")
+    latest_tick = pd.Timestamp(ticks.datetime.iloc[-1])
+    tick_age = (now - latest_tick).total_seconds()
+
+    base = {
+        "signal": "WAIT",
+        "stage": "SCANNING",
+        "reason": "Waiting for a new three-candle staircase.",
+        "price": latest_price,
+        "tick_time": latest_tick,
+        "tick_age": tick_age
+    }
+
+    if tick_age > 8 or tick_age < -2:
+        return {**base, "stage": "FEED CHECK", "reason":
+                f"Deriv feed is stale or time-misaligned ({tick_age:.1f}s)."}
+
+    candles = ticks_to_candles(ticks)
+    if len(candles) < 4:
+        return {**base, "reason": "Collecting enough one-minute candles."}
+
+    current_minute = now.floor("min")
+    forming = candles[candles.datetime == current_minute]
+    completed = candles[candles.datetime < current_minute].reset_index(drop=True)
+
+    if forming.empty or len(completed) < 3:
+        return {**base, "reason": "Waiting for the current one-minute candle and history."}
+
+    market_structure = analyze_market_structure(completed)
+    base["market_structure"] = market_structure
+
+    candle_age = (now - current_minute).total_seconds()
+    base.update({
+        "candle_time": current_minute,
+        "candle_age": candle_age
+    })
+
+    # Candle 2 is forming: the latest completed candle is Candle 1.
+    c1 = completed.iloc[-1]
+    previous = completed.iloc[-2]
+    c1_time = pd.Timestamp(c1.datetime)
+    direction, pattern = identify_candle_one(c1, previous)
+    c1_close = float(c1.close)
+
+    previous_time = pd.Timestamp(previous.datetime)
+    consecutive_previous_c1 = previous_time == c1_time - pd.Timedelta(minutes=1)
+    if direction and consecutive_previous_c1 and current_minute == c1_time + pd.Timedelta(minutes=1):
+        beyond_level = (
+            latest_price > c1_close if direction == "CALL"
+            else latest_price < c1_close
+        )
+        seconds_to_candle3 = max(
+            0, int(60 - candle_age)
+        )
+        if beyond_level:
+            return {
+                **base,
+                "signal": "WAIT",
+                "stage": "SETUP DEVELOPING",
+                "reason": (
+                    f"{pattern} identified. Candle 2 is currently beyond "
+                    f"Candle 1 close ({fmt_price(c1_close)}), but it has not closed. "
+                    "No directional signal is issued before Candle 3."
+                ),
+                "stage_detail": "CANDLE 2 FORMING — NOT CONFIRMED",
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "entry_time": current_minute + pd.Timedelta(minutes=1),
+                "countdown": seconds_to_candle3
+            }
+        return {
+            **base,
+            "stage": "CANDLE 2 WAITING",
+            "reason": (
+                f"{pattern} found. Waiting for price to move "
+                f"{'above' if direction == 'CALL' else 'below'} "
+                f"Candle 1 close at {fmt_price(c1_close)}."
+            ),
+            "pattern": pattern,
+            "entry_point": c1_close,
+            "candle1_time": c1_time
+        }
+
+    # Candle 3 is forming: completed[-2] is Candle 1 and completed[-1] is Candle 2.
+    c1 = completed.iloc[-2]
+    c2 = completed.iloc[-1]
+    previous = completed.iloc[-3]
+    c1_time = pd.Timestamp(c1.datetime)
+    direction, pattern = identify_candle_one(c1, previous)
+    c1_close = float(c1.close)
+    c2_close = float(c2.close)
+
+    c2_time = pd.Timestamp(c2.datetime)
+    previous_time = pd.Timestamp(previous.datetime)
+    consecutive_previous_c1 = previous_time == c1_time - pd.Timedelta(minutes=1)
+    consecutive_c1_c2 = c2_time == c1_time + pd.Timedelta(minutes=1)
+    if direction and consecutive_previous_c1 and consecutive_c1_c2 and current_minute == c1_time + pd.Timedelta(minutes=2):
+        candle2_confirmed = (
+            c2_close > c1_close if direction == "CALL"
+            else c2_close < c1_close
+        )
+        candle3_still_valid = (
+            latest_price > c1_close if direction == "CALL"
+            else latest_price < c1_close
+        )
+
+        if not candle2_confirmed:
+            return {
+                **base,
+                "stage": "INVALIDATED",
+                "reason": (
+                    "Candle 2 did not close beyond Candle 1's closing "
+                    "price. The staircase is invalid. Do not enter."
+                ),
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "candle2_close": c2_close
+            }
+
+        if not candle3_still_valid:
+            return {
+                **base,
+                "stage": "INVALIDATED",
+                "reason": (
+                    "Candle 3 has moved back across the Candle 1 closing "
+                    "level. The setup is invalid. Do not enter."
+                ),
+                "pattern": pattern,
+                "entry_point": c1_close,
+                "candle1_time": c1_time,
+                "candle2_close": c2_close
+            }
+
+        warnings = assess_candle3_risk(
+            completed, direction, c2, latest_price
+        )
+        warnings.extend(
+            assess_market_structure_risk(market_structure, direction)
+        )
+        if warnings:
             return {
                 **base,
                 "signal": direction,
-                "state": "ENTRY READY",
-                "reason": f"Staircase confirmed ({direction}). C2 closed beyond C1 close.",
+                "stage": "CAUTION",
+                "reason": (
+                    "The Three-Step Staircase is valid, but Candle 2 / nearby "
+                    "price structure shows possible opposing pressure. "
+                    "Review the warnings; this is NOT an ENTRY READY alert."
+                ),
+                "warnings": warnings,
+                "stage_detail": "STAIRCASE VALID — CAUTION",
+                "pattern": pattern,
                 "entry_point": c1_close,
-                "pattern": "Three-Step Staircase"
+                "candle1_time": c1_time,
+                "candle2_close": c2_close,
+                "entry_time": current_minute,
+                "countdown": max(0, int(60 - candle_age))
             }
-            
+
+        return {
+            **base,
+            "signal": direction,
+            "stage": "ENTRY READY",
+            "reason": (
+                f"Candle 2 closed {'above' if direction == 'CALL' else 'below'} "
+                f"Candle 1 close. Candle 3 is on the valid side of the entry "
+                f"level ({fmt_price(c1_close)}). Manual "
+                f"{'RISE' if direction == 'CALL' else 'FALL'} entry window."
+            ),
+            "warnings": [],
+            "stage_detail": "CANDLE 2 CONFIRMED — CANDLE 3 ENTRY",
+            "pattern": pattern,
+            "entry_point": c1_close,
+            "candle1_time": c1_time,
+            "candle2_close": c2_close,
+            "entry_time": current_minute,
+            "countdown": max(0, int(60 - candle_age))
+        }
+
     return {
-        **base, 
-        "state": "SETUP DEVELOPING", 
-        "reason": "Analyzing staircase formation (C1, C2, C3 active)."
+        **base,
+        "stage": "SCANNING",
+        "reason": (
+            "Waiting for the next valid Candle 1 → Candle 2 → Candle 3 "
+            "sequence. Candle size and higher-timeframe momentum are not filters."
+        )
     }
 
-class DerivClient:
-    def __init__(self, timeout=8):
-        if not WEBSOCKET_AVAILABLE:
-            raise RuntimeError("websocket-client not installed.")
-        self.timeout = timeout
-        self.ws = websocket.create_connection(DERIV_PUBLIC_WS, timeout=self.timeout)
-        self.ws.settimeout(self.timeout)
-    def __enter__(self):
-        return self
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            self.ws.close()
-        except:
-            pass
 
-def fetch_deriv_ticks(symbol, count=1000):
-    if not WEBSOCKET_AVAILABLE:
-        return pd.DataFrame(columns=["datetime", "close"])
-    try:
-        with DerivClient() as client:
-            req = {"ticks_history": symbol, "adjust_start_time": 1, "count": count, "end": "latest", "style": "ticks"}
-            client.ws.send(json.dumps(req))
-            raw = client.ws.recv()
-            data = json.loads(raw)
-            history = data.get("history", {})
-            prices = history.get("prices", [])
-            times = history.get("times", [])
-            df = pd.DataFrame({
-                "datetime": pd.to_datetime(times, unit="s", utc=True),
-                "close": pd.to_numeric(prices, errors="coerce")
-            })
-            return df.dropna().sort_values("datetime", kind="stable").reset_index(drop=True)
-    except:
-        return pd.DataFrame(columns=["datetime", "close"])
+# ============================================================
+# SIGNAL TIMER AND RECORD
+# ============================================================
 
-def main():
-    if not STREAMLIT_AVAILABLE:
+
+def build_signal_record(market, instrument, result, expiry=1):
+    created = now_cat()
+    entry_value = result.get("entry_time")
+    if entry_value is not None:
+        entry = as_cat(entry_value).to_pydatetime()
+    else:
+        entry = created
+    expiration = entry + timedelta(minutes=expiry)
+
+    return {
+        "market": market,
+        "instrument": instrument,
+        "direction": result["signal"],
+        "reason": result["reason"],
+        "stage": result.get("stage", "ENTRY READY"),
+        "pattern": result.get("pattern", ""),
+        "entry_point": result.get("entry_point"),
+        "signal_created": created.isoformat(),
+        "candle_time": as_cat(result["candle_time"]).isoformat(),
+        "reference_price": result.get("price"),
+        "entry_time": entry.isoformat(),
+        "expiry_time": expiration.isoformat(),
+        "expiry_minutes": expiry,
+        "status": "PREPARE" if result.get("stage") == "PREPARE" else "ENTRY WINDOW"
+    }
+
+
+def show_signal_pad(signal):
+    if not signal:
+        st.markdown(
+            """
+            <div class="signal-card signal-wait">
+                <h3>WAIT</h3>
+                <div class="small-muted">
+                    No fresh valid signal. No trade is recommended.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
         return
 
-    now_cat = datetime.now(TZ)
-    
-    clock_html = """
-    <div class="term-header">
-        <div>
-            <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
-            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • CAT Timezone Synchronized</span>
-        </div>
-        <div style="display:flex; align-items:center; gap:10px;">
-            <div id="liveClock" class="live-clock-pad">⏱️ %s CAT</div>
-        </div>
-    </div>
-    <script>
-        function updateClock() {
-            const now = new Date();
-            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-            const cat = new Date(utc + (3600000 * 2));
-            const hours = String(cat.getHours()).padStart(2, '0');
-            const minutes = String(cat.getMinutes()).padStart(2, '0');
-            const seconds = String(cat.getSeconds()).padStart(2, '0');
-            const clockEl = document.getElementById('liveClock');
-            if (clockEl) {
-                clockEl.innerHTML = `⏱️ ${hours}:${minutes}:${seconds} CAT`;
-            }
-        }
-        setInterval(updateClock, 1000);
-    </script>
-    """ % now_cat.strftime('%H:%M:%S')
+    now = now_cat()
+    entry = datetime.fromisoformat(signal["entry_time"])
+    expiry = datetime.fromisoformat(signal["expiry_time"])
 
-    st.markdown(clock_html, unsafe_allow_html=True)
-
-    ticks = fetch_deriv_ticks(GHOST_SYMBOL, count=800)
-    analysis = ghost_protocol(ticks, now_cat=now_cat)
-    state = analysis.get("state", "WAIT")
-    signal = analysis.get("signal", "WAIT")
-
-    if not ticks.empty:
-        ticks_cat = ticks.copy()
-        ticks_cat["datetime"] = ticks_cat["datetime"].dt.tz_convert(TZ) if ticks_cat["datetime"].dt.tz else ticks_cat["datetime"].dt.tz_localize("UTC").dt.tz_convert(TZ)
-        candles = ticks_cat.set_index("datetime")["close"].resample("1min").ohlc().dropna().tail(30).reset_index()
+    if now < entry:
+        status = "PREPARE"
+        remaining = int((entry - now).total_seconds())
+    elif now < expiry:
+        status = "ENTRY WINDOW"
+        remaining = int((expiry - now).total_seconds())
     else:
-        candles = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
+        status = "EXPIRED"
+        remaining = 0
 
-    left_col, right_col = st.columns([1.55, 1])
+    color = (
+        "signal-call" if signal["direction"] == "CALL"
+        else "signal-put"
+    )
 
-    with left_col:
-        st.markdown('<div class="term-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-label">Live 1-Minute Candlestick Chart (CAT Time)</div>', unsafe_allow_html=True)
-        
-        if not candles.empty:
-            fig = go.Figure(data=[go.Candlestick(
-                x=candles['datetime'],
-                open=candles['open'],
-                high=candles['high'],
-                low=candles['low'],
-                close=candles['close'],
-                increasing_line_color='#34d399',
-                decreasing_line_color='#ef4444'
-            )])
-            fig.update_layout(
-                height=385,
-                margin=dict(l=0, r=0, t=10, b=0),
-                paper_bgcolor="#0f172a",
-                plot_bgcolor="#0f172a",
-                font=dict(color="#94a3b8", size=10),
-                xaxis=dict(showgrid=False, zeroline=False),
-                yaxis=dict(showgrid=True, gridcolor="#1e293b", zeroline=False),
-                xaxis_rangeslider_visible=False
+    st.markdown(
+        f"""
+        <div class="signal-card {color}">
+            <div class="small-muted">
+                {signal["market"]} · {signal["instrument"]}
+            </div>
+            <h2>
+                {signal["direction"]}
+                &nbsp;
+                <span style="font-size:0.8em">{status}</span>
+            </h2>
+            <div><b>{signal.get("stage", status)}</b></div>
+            <div>{signal["reason"]}</div>
+            <div>Entry level: {fmt_price(signal.get("entry_point"))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    a, b, c, d = st.columns(4)
+    a.metric("Reference price", fmt_price(signal["reference_price"]))
+    b.metric(
+        "Time remaining",
+        f"{remaining // 60:02d}:{remaining % 60:02d}"
+    )
+    c.metric("Entry time (CAT)", entry.strftime("%H:%M:%S"))
+    d.metric("Expiry time (CAT)", expiry.strftime("%H:%M:%S"))
+
+    st.caption(
+        "Signal candle: "
+        + datetime.fromisoformat(signal["candle_time"]).strftime(
+            "%Y-%m-%d %H:%M:%S CAT"
+        )
+        + " · Created: "
+        + datetime.fromisoformat(signal["signal_created"]).strftime(
+            "%H:%M:%S CAT"
+        )
+    )
+
+    if status == "EXPIRED":
+        st.warning("Signal expired. Do not reuse this signal.")
+    elif status == "ENTRY WINDOW":
+        st.info(
+            "Signal window active. Confirm the live Deriv quote "
+            "and contract conditions before any demo entry."
+        )
+
+
+# ============================================================
+# CHARTS
+# ============================================================
+
+def chart(df, title):
+    view = df.tail(100)
+    fig = go.Figure(
+        go.Candlestick(
+            x=view.datetime,
+            open=view.open,
+            high=view.high,
+            low=view.low,
+            close=view.close,
+            name="1m"
+        )
+    )
+    fig.update_layout(
+        title=title,
+        height=380,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10)
+    )
+    return fig
+
+
+# ============================================================
+# SIDEBAR CONTROLS
+# ============================================================
+
+with st.sidebar:
+    st.header("Market & controls")
+
+    market = st.radio(
+        "Market engine",
+        [
+            "Pocket Option Forex · THREE STEPS",
+            "Deriv Synthetics · GHOST PROTOCOL"
+        ]
+    )
+
+    expiry = st.selectbox(
+        "Signal expiry",
+        [1, 2, 3, 5],
+        index=0,
+        format_func=lambda n: f"{n} minute(s)"
+    )
+
+    candles_count = st.slider(
+        "Forex candles to analyze",
+        80, 300, 160, 20
+    )
+
+    auto_refresh = st.checkbox(
+        "Refresh dashboard automatically",
+        value=True
+    )
+    auto_scan = st.checkbox(
+        "Automatically scan",
+        value=True
+    )
+
+    st.caption(
+        "GHOST checks the Deriv feed every 15 seconds when automatic "
+        "scanning is enabled. Forex scans once per minute."
+    )
+    st.divider()
+
+    if market.startswith("Pocket"):
+        api_key = st.text_input(
+            "Twelve Data API key",
+            value=get_secret_api_key(),
+            type="password"
+        )
+        pairs = st.multiselect(
+            "Forex pairs",
+            FOREX_PAIRS,
+            default=FOREX_PAIRS
+        )
+        pivot_strength = st.slider("Swing confirmation", 2, 4, 2)
+        min_steps = st.slider("Minimum staircase steps", 3, 5, 3)
+        pullback_pct = st.slider(
+            "Maximum pullback (%)", 20, 70, 50, 5
+        )
+        scan = st.button(
+            "SCAN FOREX",
+            type="primary",
+            use_container_width=True
+        )
+    else:
+        st.markdown("**GHOST market**")
+        st.write(GHOST_NAME)
+        st.caption(f"Deriv symbol target: {GHOST_SYMBOL}")
+        scan = st.button(
+            "CONNECT & SCAN GHOST",
+            type="primary",
+            use_container_width=True
+        )
+        st.caption(
+            "Public Deriv market data only. No account login, "
+            "password, App ID or trade execution is used."
+        )
+
+
+# ============================================================
+# AUTO REFRESH AND SCAN SCHEDULER
+# ============================================================
+
+if auto_refresh:
+    st_autorefresh(interval=15000, key="desk_clock")
+
+now = now_cat()
+st.caption(
+    f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
+)
+
+scan_interval = 15 if market.startswith("Deriv") else 60
+scan_slot = int(time.time() // scan_interval)
+last_slot = st.session_state.get("last_auto_scan_slot")
+
+auto_scan_due = auto_scan and scan_slot != last_slot
+run_scan = bool(scan or auto_scan_due)
+
+if run_scan:
+    if auto_scan_due:
+        st.session_state["last_auto_scan_slot"] = scan_slot
+
+    if market.startswith("Pocket"):
+        if not api_key:
+            st.error(
+                "Add your Twelve Data key in the sidebar "
+                "or Streamlit Secrets."
             )
-            st.plotly_chart(fig, use_container_width=True)
+        elif not pairs:
+            st.warning("Select at least one Forex pair.")
         else:
-            st.info("Awaiting tick feed for candlestick construction...")
-        st.markdown('</div>', unsafe_allow_html=True)
+            output = []
+            progress = st.progress(0)
+            note = st.empty()
 
-    with right_col:
-        badge_class = "badge-wait"
-        if state == "ENTRY READY":
-            badge_class = "badge-ready"
-        elif state == "CAUTION":
-            badge_class = "badge-caution"
-        elif state == "MARKET UNCLEAR" or state == "INVALIDATED":
-            badge_class = "badge-unclear"
+            for i, pair in enumerate(pairs):
+                note.write(f"Scanning {pair}...")
+                try:
+                    df = fetch_forex(pair, api_key, candles_count)
+                    result = three_steps(
+                        df, pivot_strength, min_steps, pullback_pct
+                    )
+                    output.append({
+                        "instrument": pair,
+                        "df": df,
+                        "result": result
+                    })
+                except Exception as exc:
+                    output.append({
+                        "instrument": pair,
+                        "error": str(exc)
+                    })
 
-        st.markdown(f"""
-        <div class="term-card" style="text-align: center; padding: 8px;">
-            <div class="card-label">Signal Pad & Decision State</div>
-            <div style="margin: 3px 0;">
-                <span class="{badge_class}">{state} ({signal})</span>
-            </div>
-            <div style="font-size: 1.4rem; font-weight: 800; color: #f8fafc; margin-top: 2px;">
-                {fmt_price(analysis.get('price', 0))}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+                progress.progress((i + 1) / len(pairs))
 
-        prep_sec = analysis.get('prep_countdown', 0)
-        t_col1, t_col2, t_col3 = st.columns(3)
-        
-        with t_col1:
-            st.markdown(f"""
-            <div class="big-time-pad">
-                <div class="big-time-lbl">Entry Time</div>
-                <div class="big-time-val" style="color: #38bdf8;">{analysis.get('entry_time', '--:--:--')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-        with t_col2:
-            st.markdown(f"""
-            <div class="big-time-pad">
-                <div class="big-time-lbl">Expiry Time</div>
-                <div class="big-time-val" style="color: #f43f5e;">{analysis.get('expiry_time', '--:--:--')}</div>
-            </div>
-            """, unsafe_allow_html=True)
+            note.empty()
+            st.session_state["scan_output"] = output
+            st.session_state["scan_market"] = "forex"
 
-        with t_col3:
-            st.markdown(f"""
-            <div class="big-time-pad" style="border-color: #34d399;">
-                <div class="big-time-lbl" style="color: #34d399;">Prep Time</div>
-                <div class="big-time-val" style="color: #34d399;">{prep_sec}s</div>
-            </div>
-            """, unsafe_allow_html=True)
+            candidates = [
+                item for item in output
+                if item.get("result", {}).get("signal") in ("CALL", "PUT")
+            ]
 
-        st.markdown(f"""
-        <div class="term-card" style="margin-top: 4px;">
-            <div style="font-size: 0.72rem; color: #cbd5e1; line-height: 1.3;">
-                <b>C1 Ref Close:</b> {fmt_price(analysis.get('entry_point', 0))} | <b>Pattern:</b> {analysis.get('pattern', 'Scanning Three-Step...')}<br>
-                <b>Reason:</b> {analysis.get('reason', '')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            if candidates:
+                chosen = max(
+                    candidates,
+                    key=lambda item: item["result"]["candle_time"]
+                )
+                st.session_state["active_signal"] = build_signal_record(
+                    "THREE STEPS",
+                    chosen["instrument"],
+                    chosen["result"],
+                    expiry
+                )
+            else:
+                st.session_state.pop("active_signal", None)
 
-        bs = analysis.get("buyer_seller", {})
-        st.markdown(f"""
-        <div class="term-card">
-            <div class="card-label">🧠 Buyer / Seller Story (Active Engine)</div>
-            <div style="font-size: 0.75rem; color: #34d399; font-weight: 700;">
-                Control: {bs.get('control', 'Analyzing...')}
-            </div>
-            <div style="font-size: 0.7rem; color: #94a3b8;">
-                {bs.get('story', '')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    else:
+        try:
+            with st.spinner(
+                "Connecting to Deriv and analysing Volatility 100 (1s)..."
+            ):
+                with DerivClient(timeout=25) as deriv:
+                    symbols = deriv_symbols(deriv)
+                    selected = next(
+                        (
+                            item for item in symbols
+                            if item.get("symbol") == GHOST_SYMBOL
+                        ),
+                        None
+                    )
 
-    time.sleep(3)
-    st.rerun()
+                    if selected is None:
+                        raise RuntimeError(
+                            f"{GHOST_SYMBOL} was not found in Deriv's "
+                            "active-symbol list. Check returned symbols "
+                            "and market availability."
+                        )
 
-if __name__ == "__main__":
-    main()
+                    ticks = fetch_deriv_ticks(
+                        selected["symbol"], 4500, deriv
+                    )
+
+                result = ghost_protocol(ticks)
+
+            st.session_state["deriv_output"] = {
+                "instrument": GHOST_NAME,
+                "symbol": GHOST_SYMBOL,
+                "ticks": ticks,
+                "candles": ticks_to_candles(ticks),
+                "result": result,
+                "last_scan": now_cat().isoformat()
+            }
+            st.session_state["scan_market"] = "deriv"
+
+            if (
+                result.get("signal") in ("CALL", "PUT")
+                and result.get("stage") == "ENTRY READY"
+            ):
+                existing = st.session_state.get("active_signal")
+                same_signal = (
+                    existing
+                    and existing.get("direction") == result["signal"]
+                    and existing.get("candle_time")
+                    == as_cat(result["candle_time"]).isoformat()
+                    and existing.get("stage") == result.get("stage")
+                    and existing.get("instrument") == GHOST_NAME
+                )
+                if not same_signal:
+                    st.session_state["active_signal"] = build_signal_record(
+                        "GHOST PROTOCOL", GHOST_NAME, result, 1
+                    )
+            else:
+                active = st.session_state.get("active_signal")
+                if active and active.get("instrument") == GHOST_NAME:
+                    st.session_state.pop("active_signal", None)
+
+        except Exception as exc:
+            st.session_state["deriv_scan_error"] = str(exc)
+            st.error(f"GHOST scan failed: {exc}")
+
+
+# ============================================================
+# SIGNAL PAD
+# ============================================================
+
+st.subheader("SIGNALS PAD")
+active_signal = st.session_state.get("active_signal")
+show_signal_pad(active_signal)
+
+
+# ============================================================
+# FOREX DASHBOARD
+# ============================================================
+
+if market.startswith("Pocket"):
+    st.subheader("THREE STEPS · Forex scanner")
+
+    results = (
+        st.session_state.get("scan_output", [])
+        if st.session_state.get("scan_market") == "forex"
+        else []
+    )
+
+    if not results:
+        st.caption(
+            "Select Forex pairs and press SCAN FOREX. "
+            "Only completed one-minute candles are analysed."
+        )
+
+    for item in results:
+        with st.container(border=True):
+            if "error" in item:
+                st.error(f'{item["instrument"]}: {item["error"]}')
+                continue
+
+            result = item["result"]
+            col1, col2, col3 = st.columns([2, 1, 3])
+            col1.markdown(f'**{item["instrument"]}**')
+            col2.metric("Signal", result["signal"])
+            col3.write(result["reason"])
+
+            with st.expander("Chart & details"):
+                st.plotly_chart(
+                    chart(item["df"], item["instrument"]),
+                    use_container_width=True
+                )
+                if "price" in result:
+                    st.write(
+                        f'Last completed close: {fmt_price(result["price"])} · '
+                        f'EMA 9: {fmt_price(result["ema9"])} · '
+                        f'EMA 21: {fmt_price(result["ema21"])}'
+                    )
+
+
+# ============================================================
+# GHOST DASHBOARD
+# ============================================================
+
+else:
+    st.subheader("GHOST · THREE-STEP STAIRCASE")
+
+    output = (
+        st.session_state.get("deriv_output")
+        if st.session_state.get("scan_market") == "deriv"
+        else None
+    )
+
+    if output:
+        latest_tick_time = (
+            output["ticks"].datetime.iloc[-1]
+            if output.get("ticks") is not None and not output["ticks"].empty
+            else None
+        )
+        render_ghost_candle_clock(latest_tick_time)
+        result = output["result"]
+        stage = result.get("stage", "SCANNING")
+        direction = result.get("signal", "WAIT")
+
+        st.markdown("### The three-candle sequence")
+        a, b, c = st.columns(3)
+        a.metric("CANDLE 1", "IDENTIFY")
+        b.metric("CANDLE 2", "CLOSE CONFIRMATION")
+        c.metric("CANDLE 3", "ENTRY")
+
+        st.markdown(f"**Current stage: {stage}**")
+        st.write(result.get("reason", "Waiting for a valid setup."))
+
+        structure = result.get("market_structure")
+        if structure:
+            st.markdown("**GHOST market structure**")
+            st.info(
+                f'{structure.get("label", "ASSESSING")} — '
+                f'{structure.get("detail", "")}'
+            )
+
+        st.markdown("**Multi-Timeframe Session & Volatility Intelligence**")
+        mtf = session_intelligence(output.get("ticks"), output.get("candles"))
+        mtf_cols = st.columns(4)
+        for col, tf in zip(mtf_cols, ("15m", "1h", "4h", "1d")):
+            item = mtf.get(tf, {})
+            col.metric(tf, item.get("state", "COLLECTING"),
+                       delta=(f'{item["ratio"]:.2f}× average range' if item.get("ratio") is not None else None))
+        activity = mtf.get("tick_activity")
+        if activity:
+            st.caption(f'Tick activity proxy: {activity["recent_per_min"]:.1f} ticks/min vs {activity["baseline_per_min"]:.1f} baseline · {activity["state"]}. This is tick frequency, NOT traded volume.')
+
+        if stage == "SETUP DEVELOPING":
+            st.info("SETUP DEVELOPING — Candle 2 is still open. Its close must confirm; no directional signal is issued yet.")
+        elif stage == "ENTRY READY":
+            action = "RISE / CALL" if direction == "CALL" else "FALL / PUT"
+            st.success(
+                f"CANDLE 2 CONFIRMED — CANDLE 3 ENTRY: {action}. "
+                "This is a manual alert, not an automatic trade."
+            )
+        elif stage == "CAUTION":
+            st.warning(
+                f"CAUTION {direction} — staircase rules are still valid, "
+                "but opposing candle behaviour or nearby structure was detected. "
+                "This is NOT an ENTRY READY signal. Do not treat it as an automatic entry."
+            )
+            for warning in result.get("warnings", []):
+                st.write(f"• {warning}")
+        elif stage == "INVALIDATED":
+            st.error("SETUP INVALIDATED — DO NOT ENTER.")
+        elif stage == "CANDLE 2 WAITING":
+            st.info("Candle 1 identified. Waiting for Candle 2 to cross its close.")
+        else:
+            st.info("SCANNING — waiting for a valid three-step staircase.")
+
+        tick_age = result.get("tick_age")
+        candle_age = result.get("candle_age")
+        detail_parts = []
+        if tick_age is not None:
+            detail_parts.append(f"Tick age: {tick_age:.1f}s")
+        if candle_age is not None:
+            detail_parts.append(f"Current candle age: {candle_age:.1f}s")
+        if detail_parts:
+            st.caption(" · ".join(detail_parts))
+
+        with st.expander("GHOST live chart and setup details", expanded=True):
+            st.plotly_chart(
+                chart(output["candles"], GHOST_NAME + " · 1-minute candles"),
+                use_container_width=True
+            )
+            latest_price = result.get("price")
+            st.write(f"Latest price: {fmt_price(latest_price)}")
+            st.write(f"Pattern: {result.get('pattern', 'Not identified')}")
+            st.write(f"Entry reference (Candle 1 close): {fmt_price(result.get('entry_point'))}")
+            if result.get("candle2_close") is not None:
+                st.write(f"Candle 2 close: {fmt_price(result.get('candle2_close'))}")
+
+        last_scan = output.get("last_scan")
+        if last_scan:
+            st.caption(
+                "Last successful Deriv scan (CAT): "
+                + datetime.fromisoformat(last_scan).strftime("%Y-%m-%d %H:%M:%S")
+            )
+    else:
+        render_ghost_candle_clock()
+        st.info(
+            "Press CONNECT & SCAN GHOST to connect to Deriv "
+            "and retrieve the first set of market data."
+        )
+        last_error = st.session_state.get("deriv_scan_error")
+        if last_error:
+            st.warning(f"Most recent Deriv scan error: {last_error}")
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.divider()
+st.caption(
+    "Research and demo alerting only — not financial advice. "
+    "GHOST 3.0 does not place trades. Deriv data and execution quotes "
+    "can differ. Confirm the live contract quote and timing. "
+    "No signal guarantees a profitable outcome."
+)
