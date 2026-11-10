@@ -1,4 +1,4 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Pure Streamlit Live Loop)
+# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Fixed Timezone & Correct Entry/Expiry Window)
 
 import os
 import json
@@ -83,11 +83,11 @@ if STREAMLIT_AVAILABLE:
             font-size: 1.15rem;
             font-weight: 800;
             color: #34d399;
-            background: rgba(15, 23, 42, 0.8);
+            background: rgba(15, 23, 42, 0.9);
             border: 1px solid #334155;
-            padding: 4px 12px;
+            padding: 4px 14px;
             border-radius: 8px;
-            box-shadow: 0 0 10px rgba(52, 211, 153, 0.15);
+            box-shadow: 0 0 10px rgba(52, 211, 153, 0.2);
         }
 
         .term-card {
@@ -173,7 +173,7 @@ def fmt_price(value):
         return "Unavailable"
     if not pd.notna(number):
         return "Unavailable"
-    return f"{number:.5f}" if abs(number) < 100 else f"{number:.3f}"
+    return f"{number:.2f}" if abs(number) < 1000 else f"{number:.2f}"
 
 def blank_result(reason, state="WAIT"):
     return {
@@ -214,26 +214,31 @@ def analyze_market_structure(completed):
         return {"trend": "BEARISH", "detail": "Lower close sequence active."}
     return {"trend": "SIDEWAYS", "detail": "Ranging market structure."}
 
-def ghost_protocol(ticks, now=None):
+def ghost_protocol(ticks, now_cat=None):
     if ticks is None or ticks.empty:
         return blank_result("Waiting for tick data.", "WAIT")
         
     latest_price = float(ticks.close.iloc[-1])
-    if now is None:
-        now = pd.Timestamp.now(tz="UTC")
+    if now_cat is None:
+        now_cat = datetime.now(TZ)
+        
     latest_tick = pd.Timestamp(ticks.datetime.iloc[-1])
-    tick_age = (now - latest_tick).total_seconds()
+    latest_tick_cat = latest_tick.tz_convert(TZ) if latest_tick.tzinfo else latest_tick.tz_localize("UTC").tz_convert(TZ)
+    tick_age = (now_cat - latest_tick_cat).total_seconds()
     
     base = {"signal": "WAIT", "state": "WAIT", "reason": "Scanning setup.", "price": latest_price}
     if tick_age > 35 or tick_age < -15:
         return {**base, "state": "FEED CHECK", "reason": f"Feed stale ({tick_age:.1f}s)."}
         
-    series = ticks.set_index("datetime")["close"].sort_index(kind="stable")
+    ticks_cat = ticks.copy()
+    ticks_cat["datetime"] = ticks_cat["datetime"].dt.tz_convert(TZ) if ticks_cat["datetime"].dt.tz else ticks_cat["datetime"].dt.tz_localize("UTC").dt.tz_convert(TZ)
+    
+    series = ticks_cat.set_index("datetime")["close"].sort_index(kind="stable")
     candles = series.resample("1min").ohlc().dropna().reset_index()
     if len(candles) < 3:
         return {**base, "state": "WAIT", "reason": "Collecting 1-min history."}
         
-    current_minute = now.floor("min")
+    current_minute = now_cat.replace(second=0, microsecond=0)
     completed = candles[candles.datetime < current_minute].reset_index(drop=True)
     if completed.empty:
         completed = candles.tail(3).reset_index(drop=True)
@@ -243,6 +248,17 @@ def ghost_protocol(ticks, now=None):
     ms = analyze_market_structure(completed)
     
     base.update({"buyer_seller": bs, "market_structure": ms, "is_choppy": is_choppy})
+    
+    next_minute = current_minute + timedelta(minutes=1)
+    expiry_target = next_minute + timedelta(minutes=1)
+    prep_seconds = max(0, int(60 - now_cat.second))
+
+    base.update({
+        "entry_time": next_minute.strftime("%H:%M:%S"),
+        "expiry_time": expiry_target.strftime("%H:%M:%S"),
+        "prep_countdown": prep_seconds
+    })
+
     if is_choppy:
         return {**base, "signal": "WAIT", "state": "MARKET UNCLEAR", "reason": chop_reason}
         
@@ -262,10 +278,14 @@ def ghost_protocol(ticks, now=None):
             price_valid = (latest_price > c1_close) if direction == "CALL" else (latest_price < c1_close)
             
             c1_time = pd.Timestamp(c1.datetime)
-            entry_time = c1_time + timedelta(minutes=2)
-            expiry_time = entry_time + timedelta(minutes=1)
-            prep_seconds = max(0, int(60 - (now.timestamp() % 60)))
+            signal_entry = c1_time + timedelta(minutes=2)
+            signal_expiry = signal_entry + timedelta(minutes=1)
             
+            base.update({
+                "entry_time": signal_entry.strftime("%H:%M:%S"),
+                "expiry_time": signal_expiry.strftime("%H:%M:%S"),
+            })
+
             if not c2_confirmed or not price_valid:
                 return {
                     **base, 
@@ -273,10 +293,7 @@ def ghost_protocol(ticks, now=None):
                     "state": "INVALIDATED", 
                     "reason": "C2 close or C3 price validation failed.", 
                     "entry_point": c1_close, 
-                    "pattern": "Staircase Step",
-                    "entry_time": entry_time.strftime("%H:%M:%S"),
-                    "expiry_time": expiry_time.strftime("%H:%M:%S"),
-                    "prep_countdown": prep_seconds
+                    "pattern": "Staircase Step"
                 }
                 
             return {
@@ -285,24 +302,17 @@ def ghost_protocol(ticks, now=None):
                 "state": "ENTRY READY",
                 "reason": f"Staircase confirmed ({direction}). C2 closed beyond C1 close.",
                 "entry_point": c1_close,
-                "pattern": "Three-Step Staircase",
-                "entry_time": entry_time.strftime("%H:%M:%S"),
-                "expiry_time": expiry_time.strftime("%H:%M:%S"),
-                "prep_countdown": prep_seconds
+                "pattern": "Three-Step Staircase"
             }
             
-    prep_seconds = max(0, int(60 - (now.timestamp() % 60)))
     return {
         **base, 
         "state": "SETUP DEVELOPING", 
-        "reason": "Analyzing staircase formation.",
-        "entry_time": (now + timedelta(minutes=1)).strftime("%H:%M:%S"),
-        "expiry_time": (now + timedelta(minutes=2)).strftime("%H:%M:%S"),
-        "prep_countdown": prep_seconds
+        "reason": "Analyzing staircase formation (C1, C2, C3 active)."
     }
 
 class DerivClient:
-    def __init__(self, timeout=10):
+    def __init__(self, timeout=8):
         if not WEBSOCKET_AVAILABLE:
             raise RuntimeError("websocket-client not installed.")
         self.timeout = timeout
@@ -346,23 +356,38 @@ def main():
     <div class="term-header">
         <div>
             <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
-            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • Pure Stream Loop</span>
+            <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • CAT Timezone Synchronized</span>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
-            <div class="live-clock-pad">
-                ⏱️ {now_cat.strftime('%H:%M:%S')} <span style="font-size:0.65rem; color:#94a3b8;">CAT</span>
-            </div>
+            <div id="liveClock" class="live-clock-pad">⏱️ {now_cat.strftime('%H:%M:%S')} CAT</div>
         </div>
     </div>
+    <script>
+        function updateClock() {
+            const now = new Date();
+            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+            const cat = new Date(utc + (3600000 * 2));
+            const hours = String(cat.getHours()).padStart(2, '0');
+            const minutes = String(cat.getMinutes()).padStart(2, '0');
+            const seconds = String(cat.getSeconds()).padStart(2, '0');
+            const clockEl = document.getElementById('liveClock');
+            if (clockEl) {
+                clockEl.innerHTML = `⏱️ ${hours}:${minutes}:${seconds} CAT`;
+            }
+        }
+        setInterval(updateClock, 1000);
+    </script>
     """, unsafe_allow_html=True)
 
     ticks = fetch_deriv_ticks(GHOST_SYMBOL, count=800)
-    analysis = ghost_protocol(ticks)
+    analysis = ghost_protocol(ticks, now_cat=now_cat)
     state = analysis.get("state", "WAIT")
     signal = analysis.get("signal", "WAIT")
 
     if not ticks.empty:
-        candles = ticks.set_index("datetime")["close"].resample("1min").ohlc().dropna().tail(30).reset_index()
+        ticks_cat = ticks.copy()
+        ticks_cat["datetime"] = ticks_cat["datetime"].dt.tz_convert(TZ) if ticks_cat["datetime"].dt.tz else ticks_cat["datetime"].dt.tz_localize("UTC").dt.tz_convert(TZ)
+        candles = ticks_cat.set_index("datetime")["close"].resample("1min").ohlc().dropna().tail(30).reset_index()
     else:
         candles = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
 
@@ -370,7 +395,7 @@ def main():
 
     with left_col:
         st.markdown('<div class="term-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-label">Live 1-Minute Candlestick Chart</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-label">Live 1-Minute Candlestick Chart (CAT Time)</div>', unsafe_allow_html=True)
         
         if not candles.empty:
             fig = go.Figure(data=[go.Candlestick(
@@ -448,7 +473,7 @@ def main():
         st.markdown(f"""
         <div class="term-card" style="margin-top: 4px;">
             <div style="font-size: 0.72rem; color: #cbd5e1; line-height: 1.3;">
-                <b>C1 Ref Close:</b> {fmt_price(analysis.get('entry_point', 0))} | <b>Pattern:</b> {analysis.get('pattern', 'Scanning...')}<br>
+                <b>C1 Ref Close:</b> {fmt_price(analysis.get('entry_point', 0))} | <b>Pattern:</b> {analysis.get('pattern', 'Scanning Three-Step...')}<br>
                 <b>Reason:</b> {analysis.get('reason', '')}
             </div>
         </div>
@@ -457,7 +482,7 @@ def main():
         bs = analysis.get("buyer_seller", {})
         st.markdown(f"""
         <div class="term-card">
-            <div class="card-label">🧠 Buyer / Seller Story</div>
+            <div class="card-label">🧠 Buyer / Seller Story (Active Engine)</div>
             <div style="font-size: 0.75rem; color: #34d399; font-weight: 700;">
                 Control: {bs.get('control', 'Analyzing...')}
             </div>
@@ -467,7 +492,6 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-    # Native Python Loop for Continuous Real-Time Updates without external dependencies
     time.sleep(3)
     st.rerun()
 
