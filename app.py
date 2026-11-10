@@ -623,3 +623,78 @@ def main():
     with c2:
         st.markdown(f"""
         <div class="app-card">
+            <div class="card-label">Pattern Found</div>
+            <div style="font-size:0.95rem; font-weight:700; color:#38bdf8; margin-top:4px;">
+                {analysis.get('pattern', 'Scanning...')}
+            </div>
+            <div class="metric-sub">Three-Step Setup</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Reason & Logic Card
+    st.markdown(f"""
+    <div class="app-card">
+        <div class="card-label">Execution Logic & Reason</div>
+        <p style="font-size: 0.88rem; color: #cbd5e1; margin: 6px 0 0 0; line-height: 1.4;">
+            {analysis.get('reason', 'Awaiting market confirmation.')}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Buyer/Seller Story Card
+    bs = analysis.get("buyer_seller", {})
+    st.markdown(f"""
+    <div class="app-card">
+        <div class="card-label">🧠 Buyer / Seller Behaviour Story</div>
+        <p style="font-size: 0.88rem; font-weight: 700; color: #34d399; margin: 4px 0;">
+            Control: {bs.get('control', 'Analyzing...')}
+        </p>
+        <p style="font-size: 0.82rem; color: #94a3b8; margin: 0; line-height: 1.3;">
+            {bs.get('story', '')}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Market Structure Card
+    ms = analysis.get("market_structure", {})
+    st.markdown(f"""
+    <div class="app-card">
+        <div class="card-label">🏗️ Market Structure & Trend</div>
+        <p style="font-size: 0.88rem; font-weight: 700; color: #38bdf8; margin: 4px 0;">
+            Bias: {ms.get('trend', 'SIDEWAYS')}
+        </p>
+        <p style="font-size: 0.82rem; color: #94a3b8; margin: 0; line-height: 1.3;">
+            {ms.get('detail', '')}
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Live Chart Preview (Clean Native Style)
+    st.markdown("""
+    <div class="app-card">
+        <div class="card-label" style="margin-bottom: 8px;">Live Price Chart (Volatility 100 1s)</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if ticks is not None and not ticks.empty:
+        fig = go.Figure(go.Scatter(
+            x=ticks["datetime"].tail(80), 
+            y=ticks["close"].tail(80), 
+            mode="lines", 
+            line=dict(color="#34d399", width=2.5)
+        ))
+        fig.update_layout(
+            height=200, 
+            margin=dict(l=0, r=0, t=0, b=0), 
+            paper_bgcolor="#111827", 
+            plot_bgcolor="#111827", 
+            font=dict(color="#94a3b8", size=10),
+            xaxis=dict(showgrid=False, zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor="#1f2937", zeroline=False)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write("Awaiting tick feed...")
+
+if __name__ == "__main__":
+    main()
