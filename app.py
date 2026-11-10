@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -34,7 +36,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.0",
+    page_title="GHOST Protocol 4.2",
     page_icon="📡",
     layout="wide"
 )
@@ -72,7 +74,7 @@ div[data-testid="stHorizontalBlock"]{gap:1rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.0</div><div class="ghost-sub">FOUR DECISION BRAINS · LIVE PRICE ACTION · CONFLUENCE SIGNAL TERMINAL</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.2</div><div class="ghost-sub">ROLE-AWARE INTELLIGENCE · CONFLICT DETECTION · EXPLAINABLE SIGNAL TERMINAL</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -274,64 +276,157 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
 # ============================================================
 # FOUR-BRAIN SIGNAL FUSION — ALL FOUR SYSTEMS VOTE
 # ============================================================
-def four_brain_decision(candles, staircase_result, strength=2, min_steps=3, pullback_pct=50):
-    """Fuse THREE STEPS, Candle Bible, Homma/Sakata and S/R into one transparent decision."""
+def four_brain_decision(candles, staircase_result, strength=2, min_steps=3, pullback_pct=50, learned_weights=None):
+    """Role-aware fusion: distinguish directional evidence from contextual observations."""
     base = dict(staircase_result or {})
     if candles is None or len(candles) < 30:
-        base.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Collecting sufficient closed candles for all four intelligence brains.", "brains":{}})
+        base.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Collecting sufficient completed candles for all four intelligence systems.", "brains":{}, "fusion":{}})
         return base
-    d=candles.copy().reset_index(drop=True)
-    three=three_steps(d, strength, min_steps, pullback_pct)
-    bible=candle_bible_analysis(d)
-    sakata=homma_sakata_analysis(d)
-    sr=support_resistance_analysis(d)
-    votes={"THREE STEPS":three.get("signal","WAIT"),"CANDLE BIBLE":"WAIT","HOMMA / SAKATA":"WAIT","SUPPORT / RESISTANCE":"WAIT"}
-    bb=str(bible.get("bias",""))
-    if "BULLISH" in bb: votes["CANDLE BIBLE"]="CALL"
-    elif "BEARISH" in bb: votes["CANDLE BIBLE"]="PUT"
-    obs=" ".join(sakata.get("observations",[])).upper()
-    if any(k in obs for k in ("BULLISH", "THREE RIVERS")): votes["HOMMA / SAKATA"]="CALL"
-    elif any(k in obs for k in ("BEARISH", "THREE MOUNTAINS")): votes["HOMMA / SAKATA"]="PUT"
-    # S/R only votes when price is close to a confirmed level AND the latest candle rejects it.
-    last=d.iloc[-1]; price=float(last.close); body=abs(float(last.close)-float(last.open)); span=max(float(last.high)-float(last.low),1e-12)
-    lower=float(min(last.open,last.close)-last.low); upper=float(last.high-max(last.open,last.close))
-    tol=max(abs(price)*0.0008, span*0.35)
-    support=sr.get("support"); resistance=sr.get("resistance")
-    near_support=support is not None and abs(price-float(support))<=tol
-    near_resistance=resistance is not None and abs(price-float(resistance))<=tol
-    if near_support and lower>max(body*1.15,span*.28) and float(last.close)>float(last.open): votes["SUPPORT / RESISTANCE"]="CALL"
-    elif near_resistance and upper>max(body*1.15,span*.28) and float(last.close)<float(last.open): votes["SUPPORT / RESISTANCE"]="PUT"
-    calls=sum(v=="CALL" for v in votes.values()); puts=sum(v=="PUT" for v in votes.values())
-    direction="CALL" if calls>=2 and calls-puts>=2 else "PUT" if puts>=2 and puts-calls>=2 else "WAIT"
-    # Stale feed and hard staircase invalidations remain hard safety blocks, not soft opinions.
-    hard_block=base.get("stage") in ("FEED CHECK","INVALIDATED")
-    if hard_block: direction="WAIT"
-    brains={
-      "THREE STEPS":{"vote":votes["THREE STEPS"],"detail":three.get("reason","No staircase alignment.")},
-      "CANDLE BIBLE":{"vote":votes["CANDLE BIBLE"],"detail":", ".join(bible.get("patterns",[]))},
-      "HOMMA / SAKATA":{"vote":votes["HOMMA / SAKATA"],"detail":", ".join(sakata.get("observations",[]))},
-      "SUPPORT / RESISTANCE":{"vote":votes["SUPPORT / RESISTANCE"],"detail":f"Support {fmt_price(support) if support is not None else '—'} · Resistance {fmt_price(resistance) if resistance is not None else '—'}"}
-    }
-    base.update({"signal":direction,"brains":brains,"brain_votes":{"CALL":calls,"PUT":puts},"candle_bible":bible,"sakata":sakata,"support_resistance":sr,"three_steps_result":three})
-    if direction in ("CALL","PUT") and not hard_block:
-        aligned=[name for name,v in votes.items() if v==direction]
-        opposing=[name for name,v in votes.items() if v in ("CALL","PUT") and v!=direction]
-        base["stage"]="ENTRY READY"
-        base["entry_time"]=now_cat().replace(second=0,microsecond=0)
-        base["price"]=price
-        base["entry_point"]=price
-        base["candle_time"]=d.datetime.iloc[-1]
-        base["reason"]=f"{calls if direction=='CALL' else puts}/4 intelligence brains align {direction}. Supporting systems: {', '.join(aligned)}." + (f" Conflicting: {', '.join(opposing)}." if opposing else " No opposing directional votes.")
-        base["supporting_brains"]=aligned
+
+    d = candles.copy().reset_index(drop=True)
+    three = three_steps(d, strength, min_steps, pullback_pct)
+    bible = candle_bible_analysis(d)
+    sakata = homma_sakata_analysis(d)
+    sr = support_resistance_analysis(d)
+    last = d.iloc[-1]
+    price = float(last.close)
+    body = abs(float(last.close) - float(last.open))
+    span = max(float(last.high) - float(last.low), 1e-12)
+    lower = float(min(last.open, last.close) - last.low)
+    upper = float(last.high - max(last.open, last.close))
+    tol = max(abs(price) * 0.0008, span * 0.35)
+    support, resistance = sr.get("support"), sr.get("resistance")
+    near_support = support is not None and abs(price - float(support)) <= tol
+    near_resistance = resistance is not None and abs(price - float(resistance)) <= tol
+
+    # Each system has a different job and weight. A pattern/location label is not
+    # automatically converted into a directional vote.
+    base_weights = {"THREE STEPS": 3.0, "CANDLE BIBLE": 2.0,
+                    "HOMMA / SAKATA": 1.5, "SUPPORT / RESISTANCE": 2.0}
+    learned_weights = learned_weights or {}
+    weights = {name: round(weight * float(learned_weights.get(name, 1.0)), 3)
+               for name, weight in base_weights.items()}
+    votes = {name: "WAIT" for name in weights}
+    details = {}
+
+    ts_vote = three.get("signal", "WAIT")
+    if ts_vote in ("CALL", "PUT"):
+        votes["THREE STEPS"] = ts_vote
+    details["THREE STEPS"] = three.get("reason", "No confirmed staircase structure.")
+
+    # Candle Bible requires a recognisable directional pattern, not merely the
+    # colour/location of the last candle. Indecision and mixed evidence stay neutral.
+    patterns = [str(x).upper() for x in bible.get("patterns", [])]
+    bull_candle_terms = ("BULLISH ENGULFING", "HAMMER-LIKE", "THREE WHITE SOLDIERS",
+                         "PIERCING LINE", "MORNING STAR", "BULLISH MARUBOZU")
+    bear_candle_terms = ("BEARISH ENGULFING", "SHOOTING-STAR", "THREE BLACK CROWS",
+                         "DARK CLOUD", "EVENING STAR", "BEARISH MARUBOZU")
+    bull_candle = any(any(term in p for term in bull_candle_terms) for p in patterns)
+    bear_candle = any(any(term in p for term in bear_candle_terms) for p in patterns)
+    if bull_candle and not bear_candle:
+        votes["CANDLE BIBLE"] = "CALL"
+    elif bear_candle and not bull_candle:
+        votes["CANDLE BIBLE"] = "PUT"
+    details["CANDLE BIBLE"] = ", ".join(bible.get("patterns", [])) + f" · {bible.get('bias', 'MIXED')}"
+
+    # Sakata formations like Three Mountains / Three Rivers describe repeated
+    # resistance/support; they are not directional reversal confirmation alone.
+    # Only explicit directional continuation formations can vote.
+    sakata_obs = [str(x).upper() for x in sakata.get("observations", [])]
+    sakata_bull = any(("THREE METHODS BULLISH" in x) or
+                      ("THREE PARALLEL LINES" in x and "BULLISH" in x) for x in sakata_obs)
+    sakata_bear = any(("THREE METHODS BEARISH" in x) or
+                      ("THREE PARALLEL LINES" in x and "BEARISH" in x) for x in sakata_obs)
+    if sakata_bull and not sakata_bear:
+        votes["HOMMA / SAKATA"] = "CALL"
+    elif sakata_bear and not sakata_bull:
+        votes["HOMMA / SAKATA"] = "PUT"
+    details["HOMMA / SAKATA"] = ", ".join(sakata.get("observations", []))
+
+    # S/R votes only when price is at a confirmed level and the candle rejects it.
+    sr_call = near_support and lower > max(body * 1.15, span * 0.28) and float(last.close) > float(last.open)
+    sr_put = near_resistance and upper > max(body * 1.15, span * 0.28) and float(last.close) < float(last.open)
+    if sr_call and not sr_put:
+        votes["SUPPORT / RESISTANCE"] = "CALL"
+    elif sr_put and not sr_call:
+        votes["SUPPORT / RESISTANCE"] = "PUT"
+    sr_context = []
+    if near_support: sr_context.append("testing support")
+    if near_resistance: sr_context.append("testing resistance")
+    if not sr_context: sr_context.append("not at a confirmed nearby level")
+    details["SUPPORT / RESISTANCE"] = (
+        f"{'; '.join(sr_context)} · Support {fmt_price(support) if support is not None else '—'}"
+        f" · Resistance {fmt_price(resistance) if resistance is not None else '—'}"
+    )
+
+    scores = {direction: sum(weights[name] for name, vote in votes.items() if vote == direction)
+              for direction in ("CALL", "PUT")}
+    supporters = {direction: [name for name, vote in votes.items() if vote == direction]
+                  for direction in ("CALL", "PUT")}
+    # Context-only Sakata candidates are disclosed, but never counted as a vote.
+    candidate = "WAIT"
+    lead = abs(scores["CALL"] - scores["PUT"])
+    top = "CALL" if scores["CALL"] > scores["PUT"] else "PUT" if scores["PUT"] > scores["CALL"] else "WAIT"
+    min_score = 4.0
+    min_systems = 2
+    direction = top if scores[top] >= min_score and len(supporters[top]) >= min_systems and lead >= 2.5 else "WAIT"
+
+    # Feed/sequence invalidation remains a hard safety stop. A disagreement is
+    # not silently resolved: it is shown as CONFLICT / WAIT with its causes.
+    hard_block = base.get("stage") in ("FEED CHECK", "INVALIDATED")
+    if hard_block:
+        direction = "WAIT"
+    conflict_names = [name for name, vote in votes.items()
+                      if vote in ("CALL", "PUT") and direction != "WAIT" and vote != direction]
+    if direction == "WAIT" and scores["CALL"] > 0 and scores["PUT"] > 0:
+        conflict_state = "DIRECT CONFLICT"
+    elif direction == "WAIT" and (scores["CALL"] > 0 or scores["PUT"] > 0):
+        conflict_state = "WEAK / INSUFFICIENT CONFLUENCE"
+    elif direction == "WAIT":
+        conflict_state = "NO DIRECTIONAL SETUP"
     else:
-        base["signal"]="WAIT"
-        if hard_block: base["stage"]="FEED CHECK" if base.get("stage")=="FEED CHECK" else "INVALIDATED"
+        conflict_state = "ALIGNED WITH OPPOSING EVIDENCE" if conflict_names else "ALIGNED"
+
+    brains = {
+        name: {"vote": votes[name], "weight": weights[name], "detail": details[name],
+               "role": {"THREE STEPS":"Structure / trend trigger", "CANDLE BIBLE":"Candle confirmation",
+                        "HOMMA / SAKATA":"Classical formation context", "SUPPORT / RESISTANCE":"Location / rejection filter"}[name]}
+        for name in weights
+    }
+    base.update({
+        "signal": direction, "brains": brains, "brain_votes": {"CALL":len(supporters["CALL"]), "PUT":len(supporters["PUT"])},
+        "brain_scores": scores, "candle_bible": bible, "sakata": sakata,
+        "support_resistance": sr, "three_steps_result": three,
+        "fusion": {"state":conflict_state, "scores":scores, "supporters":supporters,
+                   "conflicts":conflict_names, "minimum_score":min_score,
+                   "minimum_systems":min_systems, "weights":weights}
+    })
+
+    if direction in ("CALL", "PUT") and not hard_block:
+        aligned = supporters[direction]
+        opposing = [name for name, vote in votes.items() if vote in ("CALL", "PUT") and vote != direction]
+        base["stage"] = "ENTRY READY"
+        base["entry_time"] = now_cat().replace(second=0, microsecond=0)
+        base["price"] = price
+        base["entry_point"] = price
+        base["candle_time"] = d.datetime.iloc[-1]
+        base["reason"] = (
+            f"Weighted confluence {scores[direction]:.1f} vs {scores['PUT' if direction == 'CALL' else 'CALL']:.1f}. "
+            f"Supporting systems: {', '.join(aligned)}. "
+            + (f"Conflicting evidence: {', '.join(opposing)}." if opposing else "No opposing directional votes.")
+        )
+        base["supporting_brains"] = aligned
+    else:
+        base["signal"] = "WAIT"
+        if hard_block:
+            base["stage"] = "FEED CHECK" if base.get("stage") == "FEED CHECK" else "INVALIDATED"
+            base["reason"] = base.get("reason", "Hard safety block: feed or sequence invalidation.")
         else:
-            base["stage"]="SETUP DEVELOPING" if staircase_result.get("stage")=="SETUP DEVELOPING" else "SCANNING"
-        if base["stage"] == "SETUP DEVELOPING":
-            base["reason"]="Neutral preparation only: Candle 2 is still forming. No directional signal is issued until the four-brain consensus is evaluated on completed evidence."
-        else:
-            base["reason"]=f"No qualified four-brain consensus. CALL {calls}/4 · PUT {puts}/4. Wait for alignment."
+            base["stage"] = "CONFLICT / WAIT" if conflict_state == "DIRECT CONFLICT" else "SCANNING"
+            base["reason"] = (
+                f"{conflict_state}. CALL score {scores['CALL']:.1f}; PUT score {scores['PUT']:.1f}. "
+                f"Need at least {min_score:.1f} points from {min_systems} independent systems and a clear margin."
+            )
     return base
 
 
@@ -1190,6 +1285,256 @@ def ghost_protocol(ticks):
 # ============================================================
 
 
+# ============================================================
+# GHOST LEARNING MEMORY — EVERY SCAN, INCLUDING WAIT STATES
+# ============================================================
+
+LEARNING_DB = os.getenv("GHOST_DB_PATH", "ghost_learning.sqlite3")
+BRAIN_NAMES = ("THREE STEPS", "CANDLE BIBLE", "HOMMA / SAKATA", "SUPPORT / RESISTANCE")
+
+
+@contextmanager
+def _learning_connect(db_path=None):
+    conn = sqlite3.connect(db_path or LEARNING_DB, timeout=20)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init_learning_db(db_path=None):
+    with _learning_connect(db_path) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market TEXT NOT NULL, instrument TEXT NOT NULL, candle_key TEXT NOT NULL,
+            observed_at TEXT NOT NULL, reference_price REAL NOT NULL,
+            brain_votes TEXT NOT NULL, brain_scores TEXT NOT NULL,
+            state TEXT NOT NULL, evidence TEXT NOT NULL,
+            resolved_at TEXT, future_price REAL, outcome TEXT,
+            UNIQUE(market, instrument, candle_key)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_pending ON observations(market,instrument,resolved_at,observed_at)")
+
+
+def record_learning_observation(market, instrument, result, db_path=None, observed_at=None):
+    """Store one completed-candle snapshot per instrument, even when GHOST says WAIT."""
+    if not isinstance(result, dict):
+        return False
+    price = result.get("price")
+    if price is None:
+        price = result.get("entry_point")
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return False
+    stamp = observed_at or now_cat()
+    if hasattr(stamp, "isoformat"):
+        stamp_text = stamp.isoformat()
+    else:
+        stamp_text = str(stamp)
+    candle_key = str(result.get("candle_time") or stamp_text[:16])
+    brains = result.get("brains") or {}
+    votes = {name: str((brains.get(name) or {}).get("vote", "WAIT")) for name in BRAIN_NAMES}
+    scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
+    evidence = {
+        "reason": result.get("reason", ""),
+        "stage": result.get("stage", "SCANNING"),
+        "patterns": (result.get("candle_bible") or {}).get("patterns", []),
+        "sakata": (result.get("sakata") or {}).get("observations", []),
+        "support_resistance": result.get("support_resistance", {}),
+        "three_steps": result.get("three_steps_result", {}),
+        "fusion_state": (result.get("fusion") or {}).get("state", "UNKNOWN"),
+    }
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        cur = conn.execute("""INSERT OR IGNORE INTO observations
+            (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (market, instrument, candle_key, stamp_text, price,
+             json.dumps(votes), json.dumps(scores), str(result.get("stage", "SCANNING")),
+             json.dumps(evidence, default=str)))
+        return cur.rowcount > 0
+
+
+def resolve_learning_observations(market, instrument, current_price, db_path=None, now=None, horizon_seconds=60):
+    """Label old observations using only a later observed price, never future data at scan time."""
+    try:
+        current_price = float(current_price)
+    except (TypeError, ValueError):
+        return 0
+    now = now or now_cat()
+    now_dt = as_cat(now).to_pydatetime() if not isinstance(now, datetime) else as_cat(now).to_pydatetime()
+    init_learning_db(db_path)
+    updated = 0
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("""SELECT id,observed_at,reference_price FROM observations
+            WHERE market=? AND instrument=? AND resolved_at IS NULL""", (market, instrument)).fetchall()
+        for row in rows:
+            try:
+                created = as_cat(row["observed_at"]).to_pydatetime()
+            except Exception:
+                continue
+            if (now_dt - created).total_seconds() < horizon_seconds:
+                continue
+            ref = float(row["reference_price"])
+            delta = current_price - ref
+            # Ignore movements too small to distinguish from quote noise.
+            threshold = max(abs(ref) * 0.00002, 1e-8)
+            outcome = "UP" if delta > threshold else "DOWN" if delta < -threshold else "FLAT"
+            conn.execute("UPDATE observations SET resolved_at=?,future_price=?,outcome=? WHERE id=?",
+                         (now_dt.isoformat(), current_price, outcome, row["id"]))
+            updated += 1
+    return updated
+
+
+def learning_profile(market, instrument, db_path=None, minimum_samples=30):
+    """Transparent empirical calibration. No adaptation until enough out-of-sample labels exist."""
+    init_learning_db(db_path)
+    stats = {name: {"samples": 0, "wins": 0, "accuracy": None, "multiplier": 1.0} for name in BRAIN_NAMES}
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("SELECT brain_votes,outcome FROM observations WHERE market=? AND instrument=? AND outcome IN ('UP','DOWN')",
+                            (market, instrument)).fetchall()
+    for row in rows:
+        try:
+            votes = json.loads(row["brain_votes"])
+        except Exception:
+            continue
+        outcome = row["outcome"]
+        for name in BRAIN_NAMES:
+            vote = votes.get(name, "WAIT")
+            if vote not in ("CALL", "PUT"):
+                continue
+            item = stats[name]
+            item["samples"] += 1
+            if (vote == "CALL" and outcome == "UP") or (vote == "PUT" and outcome == "DOWN"):
+                item["wins"] += 1
+    multipliers = {}
+    for name, item in stats.items():
+        n = item["samples"]
+        if n:
+            accuracy = item["wins"] / n
+            item["accuracy"] = accuracy
+        if n >= minimum_samples:
+            # Conservative shrinkage around neutral; cap influence at +/-10%.
+            smoothed = (item["wins"] + 10.0) / (n + 20.0)
+            multiplier = max(0.90, min(1.10, 1.0 + (smoothed - 0.5) * 0.40))
+            item["multiplier"] = round(multiplier, 3)
+        multipliers[name] = item["multiplier"]
+    return {"stats": stats, "multipliers": multipliers,
+            "resolved_observations": len(rows), "minimum_samples": minimum_samples}
+
+
+def learning_export_bytes(db_path=None):
+    import csv
+    import io
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM observations ORDER BY observed_at").fetchall()
+    out = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows([dict(row) for row in rows])
+    return out.getvalue().encode("utf-8")
+
+
+def import_learning_csv(file_bytes, db_path=None):
+    """Restore a previously exported GHOST experience CSV without duplicating rows."""
+    import csv
+    import io
+    required = {"market", "instrument", "candle_key", "observed_at", "reference_price",
+                "brain_votes", "brain_scores", "state", "evidence"}
+    text = file_bytes.decode("utf-8-sig") if isinstance(file_bytes, bytes) else str(file_bytes)
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or not required.issubset(set(reader.fieldnames)):
+        raise ValueError("This file is not a compatible GHOST learning-history export.")
+    init_learning_db(db_path)
+    imported = 0
+    with _learning_connect(db_path) as conn:
+        for row in reader:
+            cur = conn.execute("""INSERT OR IGNORE INTO observations
+                (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (row.get("market"), row.get("instrument"), row.get("candle_key"), row.get("observed_at"),
+                 float(row.get("reference_price") or 0), row.get("brain_votes") or "{}", row.get("brain_scores") or "{}",
+                 row.get("state") or "SCANNING", row.get("evidence") or "{}", row.get("resolved_at") or None,
+                 float(row["future_price"]) if row.get("future_price") not in (None, "") else None,
+                 row.get("outcome") or None))
+            imported += max(0, cur.rowcount)
+    return imported
+
+
+# ============================================================
+# 60-SECOND CONSENSUS PREPARATION GATE
+# ============================================================
+
+def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60):
+    """A candidate must survive a full 60-second observation before entry is printed."""
+    result = dict(result or {})
+    pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
+    key = f"{market}|{instrument}"
+    now = now_cat()
+    candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
+    hard_state = result.get("stage") in ("FEED CHECK", "INVALIDATED")
+    if hard_state or candidate is None:
+        pending_all.pop(key, None)
+        if not hard_state:
+            result["signal"] = "WAIT"
+        return result
+
+    candle_key = str(result.get("candle_time", ""))
+    last_issued = st.session_state.get("ghost_last_issued", {})
+    if last_issued.get(key) == (candidate, candle_key):
+        active = st.session_state.get("active_signal")
+        if active and active.get("instrument") == instrument and active.get("direction") == candidate:
+            result.update({"signal": candidate, "stage": "ENTRY READY",
+                           "entry_time": as_cat(active["entry_time"]).to_pydatetime(),
+                           "reason": active.get("reason", result.get("reason", "Signal remains active."))})
+        else:
+            result.update({"signal": "WAIT", "stage": "SCANNING",
+                           "reason": "This candle's candidate has already been evaluated; waiting for a fresh completed candle."})
+        return result
+
+    pending = pending_all.get(key)
+    if pending is None or pending.get("direction") != candidate:
+        entry_at = now + timedelta(seconds=prep_seconds)
+        pending = {"direction": candidate, "created_at": now.isoformat(),
+                   "entry_at": entry_at.isoformat(), "candle_key": str(result.get("candle_time", "")),
+                   "reason": result.get("reason", "Four-brain candidate detected."),
+                   "supporting_brains": result.get("supporting_brains", [])}
+        pending_all[key] = pending
+        result.update({"signal": "WAIT", "stage": "PREPARE", "candidate_direction": candidate,
+                       "entry_time": entry_at, "reason": "60-second preparation: GHOST has detected a possible " + candidate +
+                       " setup. No entry yet. It is observing whether the four-brain evidence survives. " + pending["reason"]})
+        return result
+
+    entry_at = datetime.fromisoformat(pending["entry_at"])
+    remaining = (entry_at - now).total_seconds()
+    if remaining > 0:
+        result.update({"signal": "WAIT", "stage": "PREPARE", "candidate_direction": candidate,
+                       "entry_time": entry_at, "reason": f"Preparation continues · {max(0,int(remaining))} seconds remaining. " +
+                       "Candidate evidence is being monitored; no trade entry is authorised."})
+        return result
+
+    # At the end of preparation the current scan must still independently support the same direction.
+    pending_all.pop(key, None)
+    last_issued = st.session_state.setdefault("ghost_last_issued", {})
+    candle_key = str(result.get("candle_time", ""))
+    if last_issued.get(key) == (candidate, candle_key):
+        result.update({"signal": "WAIT", "stage": "SCANNING", "reason": "This candle's candidate was already evaluated; waiting for a fresh completed candle."})
+        return result
+    last_issued[key] = (candidate, candle_key)
+    result.update({"signal": candidate, "stage": "ENTRY READY", "entry_time": now,
+                   "entry_point": result.get("price"),
+                   "reason": "60-second preparation completed and current four-brain consensus still supports " + candidate + ". " + result.get("reason", "")})
+    return result
+
+
 def build_signal_record(market, instrument, result, expiry=1):
     created = now_cat()
     entry_value = result.get("entry_time")
@@ -1229,7 +1574,8 @@ def build_preparation_record(market, instrument, result, expiry=1):
         return None
     return {
         "market": market, "instrument": instrument, "direction": "WAIT",
-        "reason": result.get("reason", "Candle 2 is still forming; wait for its close."),
+        "reason": result.get("reason", "Candidate is under 60-second review; no entry yet."),
+        "candidate_direction": result.get("candidate_direction", "WAIT"),
         "stage": "PREPARE", "pattern": result.get("pattern", ""),
         "entry_point": result.get("entry_point"),
         "signal_created": created.isoformat(),
@@ -1258,7 +1604,7 @@ def show_signal_pad(signal):
         return
     if status == "PREPARE":
         color = "signal-wait"
-        heading = "PREPARATION WINDOW · NO DIRECTION YET"
+        heading = "60-SECOND PREPARATION · CANDIDATE UNDER REVIEW"
     else:
         color = "signal-call" if signal["direction"] == "CALL" else "signal-put"
         heading = f"{signal['direction']} · {status}"
@@ -1267,7 +1613,7 @@ def show_signal_pad(signal):
     a.metric("SIGNAL TIMER",f"{remaining//60:02d}:{remaining%60:02d}")
     b.metric("ENTRY (CAT)",entry.strftime("%H:%M:%S"))
     c.metric("EXPIRY (CAT)",expiry.strftime("%H:%M:%S"))
-    st.caption("Timer exists only during this active signal lifecycle. Expired or invalidated signals are cleared.")
+    st.caption("The preparation timer is not an entry. GHOST must revalidate the same direction after 60 seconds; failed consensus cancels it.")
 
 
 # ============================================================
@@ -1419,7 +1765,13 @@ scan_slot = int(time.time() // scan_interval)
 last_slot = st.session_state.get("last_auto_scan_slot")
 
 auto_scan_due = auto_scan and scan_slot != last_slot
-run_scan = bool(scan or auto_scan_due)
+pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST FOUR-BRAIN FOREX|"
+pending_due = any(
+    key.startswith(pending_prefix)
+    and now_cat() >= datetime.fromisoformat(item.get("entry_at", now_cat().isoformat()))
+    for key, item in st.session_state.get("ghost_pending_candidates", {}).items()
+)
+run_scan = bool(scan or auto_scan_due or pending_due)
 
 if run_scan:
     if auto_scan_due:
@@ -1445,7 +1797,13 @@ if run_scan:
                     result = three_steps(
                         df, pivot_strength, min_steps, pullback_pct
                     )
-                    result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct)
+                    profile = learning_profile("FOREX", pair)
+                    result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct,
+                                                 learned_weights=profile["multipliers"])
+                    result["learning_profile"] = profile
+                    record_learning_observation("FOREX", pair, result)
+                    resolve_learning_observations("FOREX", pair, result.get("price"))
+                    result = apply_preparation_gate(result, "GHOST FOUR-BRAIN FOREX", pair, expiry)
                     output.append({
                         "instrument": pair,
                         "df": df,
@@ -1466,21 +1824,33 @@ if run_scan:
             candidates = [
                 item for item in output
                 if item.get("result", {}).get("signal") in ("CALL", "PUT")
+                and item.get("result", {}).get("stage") == "ENTRY READY"
+            ]
+            preparing = [
+                item for item in output
+                if item.get("result", {}).get("stage") == "PREPARE"
             ]
 
             if candidates:
-                chosen = max(
-                    candidates,
-                    key=lambda item: item["result"]["candle_time"]
-                )
-                st.session_state["active_signal"] = build_signal_record(
-                    "GHOST FOUR-BRAIN FOREX",
-                    chosen["instrument"],
-                    chosen["result"],
-                    expiry
-                )
+                chosen = max(candidates, key=lambda item: item["result"].get("candle_time", ""))
+                existing = st.session_state.get("active_signal")
+                same_active = (existing and existing.get("market") == "GHOST FOUR-BRAIN FOREX"
+                               and existing.get("instrument") == chosen["instrument"]
+                               and existing.get("direction") == chosen["result"].get("signal")
+                               and str(existing.get("candle_time", "")) == str(chosen["result"].get("candle_time", "")))
+                if not same_active:
+                    st.session_state["active_signal"] = build_signal_record(
+                        "GHOST FOUR-BRAIN FOREX", chosen["instrument"], chosen["result"], expiry)
+            elif preparing:
+                chosen = max(preparing, key=lambda item: item["result"].get("candle_time", ""))
+                prep = build_preparation_record(
+                    "GHOST FOUR-BRAIN FOREX", chosen["instrument"], chosen["result"], expiry)
+                if prep is not None:
+                    st.session_state["active_signal"] = prep
             else:
-                st.session_state.pop("active_signal", None)
+                active = st.session_state.get("active_signal")
+                if active and active.get("market") == "GHOST FOUR-BRAIN FOREX":
+                    st.session_state.pop("active_signal", None)
 
     else:
         try:
@@ -1515,7 +1885,13 @@ if run_scan:
                 closed_brain_candles = candles.copy()
                 closed_brain_candles["datetime"] = pd.to_datetime(closed_brain_candles["datetime"], utc=True)
                 closed_brain_candles = closed_brain_candles[closed_brain_candles.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
-                result = four_brain_decision(closed_brain_candles, result)
+                profile = learning_profile("DERIV", GHOST_NAME)
+                result = four_brain_decision(closed_brain_candles, result,
+                                             learned_weights=profile["multipliers"])
+                result["learning_profile"] = profile
+                record_learning_observation("DERIV", GHOST_NAME, result)
+                resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
+                result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1)
 
             st.session_state["deriv_output"] = {
                 "instrument": GHOST_NAME, "symbol": GHOST_SYMBOL,
@@ -1532,7 +1908,7 @@ if run_scan:
                 old_key = None if not existing else (existing.get("direction"), existing.get("candle1_time"), existing.get("instrument"))
                 if key != old_key:
                     st.session_state["active_signal"] = build_signal_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
-            elif result.get("stage") == "SETUP DEVELOPING":
+            elif result.get("stage") in ("SETUP DEVELOPING", "PREPARE"):
                 prep = build_preparation_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
                 if prep is not None:
                     st.session_state["active_signal"] = prep
@@ -1561,6 +1937,19 @@ if active_signal:
 
 left, right = st.columns([1.55, 1.0], gap="medium")
 
+def render_learning(profile):
+    profile = profile or {"stats": {}, "resolved_observations": 0}
+    stats = profile.get("stats", {})
+    st.markdown("**GHOST LEARNING MEMORY · OUTCOME TRACKING**")
+    st.caption(f"Resolved observations: {profile.get('resolved_observations', 0)} · Adaptive calibration activates after 30 directional outcomes per brain.")
+    cols = st.columns(4)
+    for col, name in zip(cols, BRAIN_NAMES):
+        item = stats.get(name, {})
+        accuracy = item.get("accuracy")
+        value = f"{accuracy*100:.0f}%" if accuracy is not None else "COLLECTING"
+        col.metric(name.replace(" / ", "/"), value, delta=f"{item.get('samples',0)} samples")
+
+
 def render_brains(brains):
     st.markdown("**INTELLIGENCE BEHIND THIS DECISION**")
     if not brains:
@@ -1570,7 +1959,9 @@ def render_brains(brains):
         vote=item.get("vote","WAIT")
         color="#55dcff" if vote=="CALL" else "#ff718e" if vote=="PUT" else "#b4c1e8"
         detail=str(item.get("detail","—"))
-        st.markdown(f'<div class="brain-card"><div class="brain-name">{name}</div><div class="brain-state" style="color:{color}">{vote}</div><div class="brain-detail">{detail[:210]}</div></div>',unsafe_allow_html=True)
+        role=str(item.get("role","Evidence contributor"))
+        weight=float(item.get("weight",0))
+        st.markdown(f'<div class="brain-card"><div class="brain-name">{name} · WEIGHT {weight:g}</div><div class="brain-state" style="color:{color}">{vote}</div><div class="brain-detail"><b>{role}</b><br>{detail[:210]}</div></div>',unsafe_allow_html=True)
 
 with left:
     if market.startswith("Pocket"):
@@ -1617,7 +2008,10 @@ with right:
             st.markdown(f"**{chosen_name} · FOUR-BRAIN STATUS**")
             st.metric("CONSENSUS DECISION",chosen["result"].get("signal","WAIT"),delta=f'CALL {chosen["result"].get("brain_votes",{}).get("CALL",0)}/4 · PUT {chosen["result"].get("brain_votes",{}).get("PUT",0)}/4')
             render_brains(chosen["result"].get("brains",{}))
+            render_learning(chosen["result"].get("learning_profile", {}))
             st.caption(chosen["result"].get("reason","Waiting for confluence."))
+            fusion=chosen["result"].get("fusion",{})
+            st.info(f"FUSION STATUS · {fusion.get('state','COLLECTING')} · Scores: CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
         else:
             render_brains({})
     else:
@@ -1626,7 +2020,10 @@ with right:
             result=output["result"]; votes=result.get("brain_votes",{})
             st.metric("FOUR-BRAIN DECISION",result.get("signal","WAIT"),delta=f'CALL {votes.get("CALL",0)}/4 · PUT {votes.get("PUT",0)}/4')
             render_brains(result.get("brains",{}))
+            render_learning(result.get("learning_profile", {}))
             st.caption(result.get("reason","Waiting for confluence."))
+            fusion=result.get("fusion",{})
+            st.info(f"FUSION STATUS · {fusion.get('state','COLLECTING')} · Scores: CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
             mtf=session_intelligence(output.get("ticks"),output.get("candles"),output.get("mtf_history"))
             st.markdown("**HIGHER-TIMEFRAME CONTEXT**")
             cols=st.columns(4)
@@ -1636,7 +2033,23 @@ with right:
         else:
             render_brains({})
 
-st.markdown('<div class="small-muted" style="text-align:center;padding:5px">BLUE = bullish evidence · RED = bearish evidence · PURPLE = intelligence layer · WHITE = final decision · No consensus means WAIT.</div>',unsafe_allow_html=True)
+st.markdown('<div class="small-muted" style="text-align:center;padding:5px">BLUE = bullish evidence · RED = bearish evidence · PURPLE = intelligence layer · WHITE = final decision · Conflicting evidence is exposed; weak consensus means WAIT.</div>',unsafe_allow_html=True)
+
+# Learning dataset export: user can preserve training history between deployments.
+st.download_button(
+    "EXPORT GHOST LEARNING HISTORY (CSV)",
+    data=learning_export_bytes(),
+    file_name="ghost_learning_history.csv",
+    mime="text/csv",
+    help="Download every recorded WAIT/consensus observation and its later outcome for backup and review."
+)
+learning_backup = st.file_uploader("RESTORE PREVIOUS GHOST LEARNING HISTORY (CSV)", type=["csv"], key="ghost_learning_restore")
+if learning_backup is not None:
+    try:
+        restored = import_learning_csv(learning_backup.getvalue())
+        st.success(f"Restored {restored} new learning observations. Existing records were safely skipped.")
+    except Exception as exc:
+        st.error(f"Learning-history restore failed: {exc}")
 
 # ============================================================
 # FOOTER
@@ -1645,7 +2058,7 @@ st.markdown('<div class="small-muted" style="text-align:center;padding:5px">BLUE
 st.divider()
 st.caption(
     "Research and demo alerting only — not financial advice. "
-    "GHOST 3.2 does not place trades. Deriv data and execution quotes "
+    "GHOST 4.2 does not place trades. Deriv data and execution quotes "
     "can differ. Confirm the live contract quote and timing. "
     "No signal guarantees a profitable outcome."
 )
