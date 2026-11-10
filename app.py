@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import requests
 import streamlit as st
@@ -36,7 +37,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.2",
+    page_title="GHOST Protocol 4.3",
     page_icon="📡",
     layout="wide"
 )
@@ -44,37 +45,43 @@ st.set_page_config(
 st.markdown("""
 <style>
 :root{color-scheme:dark}
+html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:100%;overflow:hidden}
+
 .stApp{background:radial-gradient(ellipse at 15% 0%,#182d59 0%,#10152e 42%,#080d1c 100%);color:#f4f7ff}
-.block-container{max-width:100%;padding:0.65rem 1.1rem 1rem}
+.block-container{max-width:100%;height:calc(100vh - 2px);overflow:hidden;padding:0.35rem .75rem .35rem}
 [data-testid="stSidebar"]{background:#0c1530;border-right:1px solid #263b72}
 [data-testid="stMetric"]{background:linear-gradient(145deg,#17264b,#171b3b);border:1px solid #344b88;padding:9px 12px;border-radius:13px;min-height:88px}
 [data-testid="stMetricLabel"]{color:#a9bce8!important;font-weight:800;letter-spacing:.08em}
 [data-testid="stMetricValue"]{color:#f6f8ff!important;font-weight:900}
 [data-testid="stVerticalBlockBorderWrapper"]{border-color:#33477d!important;border-radius:14px}
-.ghost-hero{background:linear-gradient(105deg,#142d61,#38236c 68%,#19254a);border:1px solid #637bd1;border-radius:16px;padding:13px 20px;margin:2px 0 12px;box-shadow:0 8px 28px #03081788}
+.ghost-hero{background:linear-gradient(105deg,#142d61,#38236c 68%,#19254a);border:1px solid #637bd1;border-radius:12px;padding:7px 15px;margin:0 0 5px;box-shadow:0 5px 18px #03081788}
 .ghost-kicker{color:#b7c9ff;letter-spacing:2.2px;font-size:10px;font-weight:900}
-.ghost-title{color:#fff;font-size:29px;font-weight:950;letter-spacing:.02em;margin:1px 0}
+.ghost-title{color:#fff;font-size:23px;font-weight:950;letter-spacing:.02em;margin:1px 0}
 .ghost-sub{color:#d0d9fa;font-size:12px}
-.signal-card{padding:9px 12px;border-radius:14px;background:linear-gradient(145deg,#17254b,#191c3c);border:1px solid #465a9a;margin:4px 0 10px}
+.signal-card{padding:6px 9px;border-radius:14px;background:linear-gradient(145deg,#17254b,#191c3c);border:1px solid #465a9a;margin:4px 0 10px}
 .signal-call{border-left:5px solid #45d7ff}.signal-put{border-left:5px solid #ff647f}.signal-wait{border-left:5px solid #8b91b9}
-.brain-card{background:linear-gradient(145deg,#141f40,#211b46);border:1px solid #354b86;border-radius:10px;padding:7px 10px;margin:3px 0}
+.brain-card{background:linear-gradient(145deg,#141f40,#211b46);border:1px solid #354b86;border-radius:9px;padding:5px 7px;margin:2px 0}
 .brain-name{color:#b9caff;font-size:10px;font-weight:900;letter-spacing:1.2px}
-.brain-state{color:#fff;font-size:14px;font-weight:850;margin:3px 0}
-.brain-detail{color:#c0cbea;font-size:10px;line-height:1.35}
+.brain-state{color:#fff;font-size:12px;font-weight:850;margin:3px 0}
+.brain-detail{color:#c0cbea;font-size:9px;line-height:1.25}
 .small-muted{color:#b3c0df;font-size:.78rem}
 h1,h2,h3{letter-spacing:-.02em;color:#f7f8ff}
-[data-testid="stPlotlyChart"]{border:1px solid #344a87;border-radius:14px;overflow:hidden;background:#0d1530}
+[data-testid="stPlotlyChart"]{border:1px solid #344a87;border-radius:10px;overflow:hidden;background:#0d1530;margin-bottom:0!important}
 [data-testid="stMainBlockContainer"]{padding-top:.35rem}
 section[data-testid="stMain"]{overflow-x:hidden}
-div[data-testid="stHorizontalBlock"]{gap:1rem}
+div[data-testid="stHorizontalBlock"]{gap:.55rem}
 .stButton>button{border-radius:11px;border:1px solid #657ce0;background:linear-gradient(90deg,#2859bc,#6536a5);color:white;font-weight:850;min-height:42px}
 .stButton>button:hover{border-color:#a8b8ff;color:white;box-shadow:0 0 14px #536be866}
-@media(max-width:900px){.block-container{padding:.5rem}.ghost-title{font-size:23px}}
+[data-testid="stTabs"] button{font-size:11px!important;font-weight:800!important;padding:4px 8px!important}
+[data-testid="stMetric"]{padding:5px 7px!important;min-height:62px!important}
+[data-testid="stMetricValue"]{font-size:1.15rem!important}
+[data-testid="stVerticalBlock"]{gap:.35rem!important}
+@media(max-width:900px){html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:auto;overflow:auto}.block-container{height:auto;overflow:visible;padding:.5rem}.ghost-title{font-size:21px}}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.2</div><div class="ghost-sub">ROLE-AWARE INTELLIGENCE · CONFLICT DETECTION · EXPLAINABLE SIGNAL TERMINAL</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.3</div><div class="ghost-sub">EXPERIENCE-LEARNING AI · FOUR-BRAIN FUSION · EXPLAINABLE DECISIONS</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -1289,6 +1296,169 @@ def ghost_protocol(ticks):
 # GHOST LEARNING MEMORY — EVERY SCAN, INCLUDING WAIT STATES
 # ============================================================
 
+
+# ============================================================
+# EXPERIENCE-LEARNING MODEL — WALK-FORWARD, EXPLAINABLE
+# ============================================================
+FEATURE_NAMES = (
+    "three_steps_vote", "candle_bible_vote", "homma_sakata_vote", "support_resistance_vote",
+    "call_score", "put_score", "score_margin",
+    "body_fraction", "upper_wick_fraction", "lower_wick_fraction", "close_location",
+    "return_1_atr", "return_3_atr", "return_5_atr", "ema_spread_atr",
+    "support_distance_atr", "resistance_distance_atr",
+    "candle_pattern_bias", "sakata_pattern_bias", "hour_sin", "hour_cos"
+)
+
+
+def _vote_number(value):
+    return 1.0 if value == "CALL" else -1.0 if value == "PUT" else 0.0
+
+
+def build_learning_features(result, candles=None):
+    """Build a fixed, causal feature vector from the snapshot and completed candles only."""
+    result = result or {}
+    brains = result.get("brains") or {}
+    votes = [_vote_number((brains.get(name) or {}).get("vote", "WAIT")) for name in
+             ("THREE STEPS", "CANDLE BIBLE", "HOMMA / SAKATA", "SUPPORT / RESISTANCE")]
+    scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
+    call_score = float(scores.get("CALL", 0) or 0)
+    put_score = float(scores.get("PUT", 0) or 0)
+    vals = []
+    if candles is not None and len(candles) >= 6:
+        d = candles.copy().reset_index(drop=True)
+        last = d.iloc[-1]
+        close = float(last.close)
+        span = max(float(last.high) - float(last.low), 1e-12)
+        atr = float((d.high - d.low).tail(20).mean())
+        atr = max(atr, abs(close) * 1e-8, 1e-12)
+        body = float(last.close) - float(last.open)
+        upper = float(last.high) - max(float(last.open), float(last.close))
+        lower = min(float(last.open), float(last.close)) - float(last.low)
+        close_loc = (close - float(last.low)) / span
+        returns = []
+        for n in (1, 3, 5):
+            prev = float(d.close.iloc[-1-n])
+            returns.append((close - prev) / atr)
+        ema9 = float(d.close.ewm(span=9, adjust=False).mean().iloc[-1])
+        ema21 = float(d.close.ewm(span=21, adjust=False).mean().iloc[-1])
+        sr = result.get("support_resistance") or {}
+        support = sr.get("support")
+        resistance = sr.get("resistance")
+        sd = (close - float(support)) / atr if support is not None else 10.0
+        rd = (float(resistance) - close) / atr if resistance is not None else 10.0
+        try:
+            stamp = pd.Timestamp(last.datetime)
+            hour = stamp.hour + stamp.minute / 60.0
+        except Exception:
+            hour = now_cat().hour
+        patterns = " ".join(str(x).upper() for x in (result.get("candle_bible") or {}).get("patterns", []))
+        sakata = " ".join(str(x).upper() for x in (result.get("sakata") or {}).get("observations", []))
+        candle_bias = 1.0 if any(x in patterns for x in ("BULLISH", "HAMMER", "MORNING STAR")) else -1.0 if any(x in patterns for x in ("BEARISH", "SHOOTING", "EVENING STAR")) else 0.0
+        sakata_bias = 1.0 if "BULLISH" in sakata else -1.0 if "BEARISH" in sakata else 0.0
+        vals = [body/span, upper/span, lower/span, close_loc, *returns,
+                (ema9-ema21)/atr, max(-10,min(10,sd)), max(-10,min(10,rd)),
+                candle_bias, sakata_bias, np.sin(2*np.pi*hour/24), np.cos(2*np.pi*hour/24)]
+    else:
+        vals = [0.0] * 14
+    vector = np.asarray(votes + [call_score, put_score, call_score-put_score] + vals, dtype=float)
+    if vector.size != len(FEATURE_NAMES):
+        vector = np.resize(vector, len(FEATURE_NAMES))
+    return np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).tolist()
+
+
+def train_experience_model(market, instrument, db_path=None, minimum_samples=250):
+    """Fit regularized logistic regression on older data and validate on a later holdout."""
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("""SELECT id,features,outcome FROM observations
+            WHERE market=? AND instrument=? AND outcome IN ('UP','DOWN') AND features IS NOT NULL
+            ORDER BY observed_at,id""", (market, instrument)).fetchall()
+    parsed = []
+    for row in rows:
+        try:
+            x = json.loads(row["features"])
+            if len(x) == len(FEATURE_NAMES):
+                parsed.append((np.asarray(x, dtype=float), 1.0 if row["outcome"] == "UP" else 0.0))
+        except Exception:
+            continue
+    n = len(parsed)
+    model = {"ready": False, "samples": n, "minimum_samples": minimum_samples,
+             "balanced_accuracy": None, "validation_accuracy": None, "probability_up": None,
+             "status": "COLLECTING EXPERIENCE", "feature_names": list(FEATURE_NAMES)}
+    if n < minimum_samples:
+        model["status"] = f"COLLECTING · {n}/{minimum_samples} resolved examples"
+        return model
+    X = np.vstack([p[0] for p in parsed])
+    y = np.asarray([p[1] for p in parsed], dtype=float)
+    split = max(int(n * 0.8), n - 200)
+    split = min(max(split, 100), n - 50)
+    X_train, X_val = X[:split], X[split:]
+    y_train, y_val = y[:split], y[split:]
+    if min(np.sum(y_train == 0), np.sum(y_train == 1), np.sum(y_val == 0), np.sum(y_val == 1)) < 8:
+        model["status"] = "NOT TRAINABLE · outcome classes are too imbalanced"
+        return model
+    mean = X_train.mean(axis=0)
+    scale = X_train.std(axis=0)
+    scale[scale < 1e-8] = 1.0
+    A = np.clip((X_train-mean)/scale, -8, 8)
+    B = np.clip((X_val-mean)/scale, -8, 8)
+    A = np.column_stack([np.ones(len(A)), A])
+    B = np.column_stack([np.ones(len(B)), B])
+    w = np.zeros(A.shape[1], dtype=float)
+    for _ in range(500):
+        z = np.clip(A @ w, -25, 25)
+        p = 1.0 / (1.0 + np.exp(-z))
+        grad = (A.T @ (p-y_train))/len(y_train)
+        grad[1:] += 0.02*w[1:]
+        w -= 0.08*grad
+    pv = 1.0/(1.0+np.exp(-np.clip(B@w,-25,25)))
+    pred = (pv >= 0.5).astype(float)
+    accuracy = float(np.mean(pred == y_val))
+    recalls = []
+    for cls in (0.0, 1.0):
+        mask = y_val == cls
+        recalls.append(float(np.mean(pred[mask] == cls)))
+    balanced = float(np.mean(recalls))
+    majority = max(float(np.mean(y_val == 0)), float(np.mean(y_val == 1)))
+    trusted = balanced >= 0.53 and accuracy >= majority + 0.01
+    model.update({"ready": trusted, "samples": n, "validation_accuracy": accuracy,
+                  "balanced_accuracy": balanced, "status": "VALIDATED MODEL" if trusted else "MODEL NOT TRUSTED · rules remain in control",
+                  "weights": w.tolist(), "mean": mean.tolist(), "scale": scale.tolist(),
+                  "trained_through_id": int(rows[split-1]["id"]), "validation_examples": len(y_val)})
+    return model
+
+
+def predict_experience(model, features):
+    if not model or not model.get("ready"):
+        return None
+    x = np.asarray(features, dtype=float)
+    mean = np.asarray(model["mean"], dtype=float)
+    scale = np.asarray(model["scale"], dtype=float)
+    scale[scale < 1e-8] = 1.0
+    a = np.concatenate([[1.0], np.clip((x-mean)/scale, -8, 8)])
+    w = np.asarray(model["weights"], dtype=float)
+    return float(1.0/(1.0+np.exp(-np.clip(a@w,-25,25))))
+
+
+def apply_experience_gate(result, model, candles=None):
+    """AI is a cautious meta-filter, never an invented standalone signal."""
+    result = dict(result or {})
+    features = build_learning_features(result, candles)
+    probability = predict_experience(model, features)
+    model_view = {k:v for k,v in (model or {}).items() if k not in ("weights","mean","scale")}
+    model_view["probability_up"] = probability
+    result["experience_ai"] = model_view
+    candidate = result.get("signal")
+    if probability is not None and candidate in ("CALL","PUT"):
+        agrees = probability >= 0.58 if candidate == "CALL" else probability <= 0.42
+        if not agrees:
+            result["signal"] = "WAIT"
+            result["stage"] = "AI DISAGREEMENT / WAIT"
+            result["reason"] = (f"Four-brain candidate {candidate} did not pass GHOST's validated experience model "
+                                f"(estimated UP probability {probability:.0%}). Candidate cancelled.")
+    return result
+
+
 LEARNING_DB = os.getenv("GHOST_DB_PATH", "ghost_learning.sqlite3")
 BRAIN_NAMES = ("THREE STEPS", "CANDLE BIBLE", "HOMMA / SAKATA", "SUPPORT / RESISTANCE")
 
@@ -1315,13 +1485,16 @@ def init_learning_db(db_path=None):
             observed_at TEXT NOT NULL, reference_price REAL NOT NULL,
             brain_votes TEXT NOT NULL, brain_scores TEXT NOT NULL,
             state TEXT NOT NULL, evidence TEXT NOT NULL,
-            resolved_at TEXT, future_price REAL, outcome TEXT,
+            resolved_at TEXT, future_price REAL, outcome TEXT, features TEXT,
             UNIQUE(market, instrument, candle_key)
         )""")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(observations)").fetchall()}
+        if "features" not in columns:
+            conn.execute("ALTER TABLE observations ADD COLUMN features TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_pending ON observations(market,instrument,resolved_at,observed_at)")
 
 
-def record_learning_observation(market, instrument, result, db_path=None, observed_at=None):
+def record_learning_observation(market, instrument, result, db_path=None, observed_at=None, candles=None):
     """Store one completed-candle snapshot per instrument, even when GHOST says WAIT."""
     if not isinstance(result, dict):
         return False
@@ -1341,6 +1514,7 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
     brains = result.get("brains") or {}
     votes = {name: str((brains.get(name) or {}).get("vote", "WAIT")) for name in BRAIN_NAMES}
     scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
+    features = build_learning_features(result, candles)
     evidence = {
         "reason": result.get("reason", ""),
         "stage": result.get("stage", "SCANNING"),
@@ -1353,11 +1527,11 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
         cur = conn.execute("""INSERT OR IGNORE INTO observations
-            (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,features)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (market, instrument, candle_key, stamp_text, price,
              json.dumps(votes), json.dumps(scores), str(result.get("stage", "SCANNING")),
-             json.dumps(evidence, default=str)))
+             json.dumps(evidence, default=str), json.dumps(features)))
         return cur.rowcount > 0
 
 
@@ -1458,13 +1632,13 @@ def import_learning_csv(file_bytes, db_path=None):
     with _learning_connect(db_path) as conn:
         for row in reader:
             cur = conn.execute("""INSERT OR IGNORE INTO observations
-                (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome,features)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (row.get("market"), row.get("instrument"), row.get("candle_key"), row.get("observed_at"),
                  float(row.get("reference_price") or 0), row.get("brain_votes") or "{}", row.get("brain_scores") or "{}",
                  row.get("state") or "SCANNING", row.get("evidence") or "{}", row.get("resolved_at") or None,
                  float(row["future_price"]) if row.get("future_price") not in (None, "") else None,
-                 row.get("outcome") or None))
+                 row.get("outcome") or None, row.get("features") or None))
             imported += max(0, cur.rowcount)
     return imported
 
@@ -1636,7 +1810,7 @@ def chart(df, title, levels=None):
             fig.add_hline(y=float(resistance),line_dash="dot",line_color="#b78aff",line_width=1.4,annotation_text="RESISTANCE",annotation_position="top right")
     fig.update_layout(
         title=dict(text=title,font=dict(size=15,color="#edf2ff")),
-        height=430, paper_bgcolor="#0c1430", plot_bgcolor="#0c1430",
+        height=330, paper_bgcolor="#0c1430", plot_bgcolor="#0c1430",
         font=dict(color="#c6d2f2",family="Arial"),
         xaxis_rangeslider_visible=False,
         margin=dict(l=8,r=8,t=42,b=8),
@@ -1801,8 +1975,14 @@ if run_scan:
                     result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct,
                                                  learned_weights=profile["multipliers"])
                     result["learning_profile"] = profile
-                    record_learning_observation("FOREX", pair, result)
+                    record_learning_observation("FOREX", pair, result, candles=df)
                     resolve_learning_observations("FOREX", pair, result.get("price"))
+                    model_key = f"FOREX|{pair}"
+                    model_cache = st.session_state.setdefault("ghost_experience_models", {})
+                    if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
+                        trained = train_experience_model("FOREX", pair)
+                        model_cache[model_key] = {**trained, "cached_at": int(time.time())}
+                    result = apply_experience_gate(result, model_cache[model_key], df)
                     result = apply_preparation_gate(result, "GHOST FOUR-BRAIN FOREX", pair, expiry)
                     output.append({
                         "instrument": pair,
@@ -1889,8 +2069,14 @@ if run_scan:
                 result = four_brain_decision(closed_brain_candles, result,
                                              learned_weights=profile["multipliers"])
                 result["learning_profile"] = profile
-                record_learning_observation("DERIV", GHOST_NAME, result)
+                record_learning_observation("DERIV", GHOST_NAME, result, candles=closed_brain_candles)
                 resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
+                model_key = f"DERIV|{GHOST_NAME}"
+                model_cache = st.session_state.setdefault("ghost_experience_models", {})
+                if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
+                    trained = train_experience_model("DERIV", GHOST_NAME)
+                    model_cache[model_key] = {**trained, "cached_at": int(time.time())}
+                result = apply_experience_gate(result, model_cache[model_key], closed_brain_candles)
                 result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1)
 
             st.session_state["deriv_output"] = {
@@ -1935,130 +2121,143 @@ if active_signal:
         st.session_state.pop("active_signal", None)
         active_signal = None
 
-left, right = st.columns([1.55, 1.0], gap="medium")
+
+left, right = st.columns([0.94, 1.06], gap="small")
 
 def render_learning(profile):
     profile = profile or {"stats": {}, "resolved_observations": 0}
     stats = profile.get("stats", {})
-    st.markdown("**GHOST LEARNING MEMORY · OUTCOME TRACKING**")
-    st.caption(f"Resolved observations: {profile.get('resolved_observations', 0)} · Adaptive calibration activates after 30 directional outcomes per brain.")
+    st.caption(f"Outcome observations: {profile.get('resolved_observations', 0)} · Adaptive brain calibration waits for adequate evidence.")
     cols = st.columns(4)
     for col, name in zip(cols, BRAIN_NAMES):
         item = stats.get(name, {})
         accuracy = item.get("accuracy")
-        value = f"{accuracy*100:.0f}%" if accuracy is not None else "COLLECTING"
-        col.metric(name.replace(" / ", "/"), value, delta=f"{item.get('samples',0)} samples")
+        value = f"{accuracy*100:.0f}%" if accuracy is not None else "—"
+        col.metric(name.split()[0], value, delta=f"{item.get('samples',0)} samples")
 
 
 def render_brains(brains):
-    st.markdown("**INTELLIGENCE BEHIND THIS DECISION**")
     if not brains:
-        st.markdown('<div class="brain-card"><div class="brain-name">FOUR-BRAIN FUSION</div><div class="brain-state">COLLECTING MARKET DATA</div><div class="brain-detail">No system is being credited with a signal until its evidence is available.</div></div>',unsafe_allow_html=True)
+        st.markdown('<div class="brain-card"><div class="brain-name">FOUR-BRAIN FUSION</div><div class="brain-state">COLLECTING MARKET DATA</div><div class="brain-detail">No system receives credit without evidence.</div></div>',unsafe_allow_html=True)
         return
-    for name, item in brains.items():
+    cols = st.columns(2)
+    for col, (name, item) in zip(cols * 2, brains.items()):
         vote=item.get("vote","WAIT")
         color="#55dcff" if vote=="CALL" else "#ff718e" if vote=="PUT" else "#b4c1e8"
         detail=str(item.get("detail","—"))
         role=str(item.get("role","Evidence contributor"))
         weight=float(item.get("weight",0))
-        st.markdown(f'<div class="brain-card"><div class="brain-name">{name} · WEIGHT {weight:g}</div><div class="brain-state" style="color:{color}">{vote}</div><div class="brain-detail"><b>{role}</b><br>{detail[:210]}</div></div>',unsafe_allow_html=True)
+        with col:
+            st.markdown(f'<div class="brain-card"><div class="brain-name">{name} · {weight:g} PTS</div><div class="brain-state" style="color:{color}">{vote}</div><div class="brain-detail"><b>{role}</b> · {detail[:155]}</div></div>',unsafe_allow_html=True)
 
-with left:
+
+def render_chart_area():
     if market.startswith("Pocket"):
-        st.markdown("### <span style='color:#8cbaff'>01</span> · LIVE FOREX PRICE ACTION",unsafe_allow_html=True)
+        st.markdown("**LIVE FOREX PRICE ACTION**")
         results=st.session_state.get("scan_output",[]) if st.session_state.get("scan_market")=="forex" else []
         valid=[x for x in results if "error" not in x and x.get("df") is not None and not x["df"].empty]
         if valid:
             names=[x["instrument"] for x in valid]
-            selected_name=st.selectbox("CHART INSTRUMENT",names,label_visibility="collapsed",key="brain_selected_pair")
+            selected_name=st.selectbox("CHART PAIR",names,label_visibility="collapsed",key="brain_selected_pair")
             selected=next(x for x in valid if x["instrument"]==selected_name)
-            st.plotly_chart(chart(selected["df"],selected_name+" · 1 MINUTE",selected["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
+            st.plotly_chart(chart(selected["df"],selected_name+" · 1M",selected["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
             res=selected["result"]
             p1,p2,p3=st.columns(3)
             p1.metric("LAST PRICE",fmt_price(res.get("price")))
             p2.metric("EMA 9",fmt_price(res.get("ema9")))
             p3.metric("EMA 21",fmt_price(res.get("ema21")))
-            st.caption("Forex candles are completed 1-minute Twelve Data observations. API limits and feed delay apply.")
         else:
-            st.markdown('<div class="signal-card signal-wait"><h3>FOREX CHART STANDBY</h3><div class="small-muted">Select pairs and scan from the left control rail. Your chart will appear here.</div></div>',unsafe_allow_html=True)
+            st.markdown('<div class="signal-card signal-wait"><h4>FOREX CHART STANDBY</h4><div class="small-muted">Choose pairs and scan from the control rail.</div></div>',unsafe_allow_html=True)
             for item in results:
                 if "error" in item: st.error(f'{item["instrument"]}: {item["error"]}')
     else:
-        st.markdown("### <span style='color:#8cbaff'>01</span> · LIVE SYNTHETIC CANDLE CHART",unsafe_allow_html=True)
+        st.markdown("**LIVE SYNTHETIC CANDLE CHART**")
         output=st.session_state.get("deriv_output") if st.session_state.get("scan_market")=="deriv" else None
         if output and output.get("candles") is not None and not output["candles"].empty:
-            st.plotly_chart(chart(output["candles"],GHOST_NAME+" · LIVE 1 MINUTE",output["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
+            st.plotly_chart(chart(output["candles"],GHOST_NAME+" · LIVE 1M",output["result"].get("support_resistance")),use_container_width=True,config={"displayModeBar":False})
             result=output["result"]; fs=output.get("feed_status",{}); age=fs.get("last_tick_age")
             feed_ok=fs.get("connected") and age is not None and age<=8
-            st.markdown(f'<div class="brain-card"><span class="brain-name">LIVE FEED</span><div class="brain-state" style="color:{"#55dcff" if feed_ok else "#ff718e"}">{"CONNECTED" if feed_ok else "RECONNECTING / DELAYED"}</div><div class="brain-detail">Last tick age: {f"{age:.1f}s" if age is not None else "unknown"} · Symbol: {output.get("symbol",GHOST_SYMBOL)}</div></div>',unsafe_allow_html=True)
+            st.markdown(f'<div class="brain-card"><span class="brain-name">LIVE FEED</span><div class="brain-state" style="color:{"#55dcff" if feed_ok else "#ff718e"}">{"CONNECTED" if feed_ok else "RECONNECTING / DELAYED"}</div><div class="brain-detail">Tick age: {f"{age:.1f}s" if age is not None else "unknown"} · {output.get("symbol",GHOST_SYMBOL)}</div></div>',unsafe_allow_html=True)
         else:
-            st.markdown('<div class="signal-card signal-wait"><h3>DERIV CHART STANDBY</h3><div class="small-muted">Connect and scan GHOST to load the live public tick stream and one-minute candles.</div></div>',unsafe_allow_html=True)
+            st.markdown('<div class="signal-card signal-wait"><h4>DERIV CHART STANDBY</h4><div class="small-muted">Connect and scan GHOST to load live candles.</div></div>',unsafe_allow_html=True)
 
-with right:
-    st.markdown("### <span style='color:#c5a5ff'>02</span> · SIGNAL COMMAND DECK",unsafe_allow_html=True)
-    show_signal_pad(active_signal)
+
+def selected_result():
     if market.startswith("Pocket"):
         results=st.session_state.get("scan_output",[]) if st.session_state.get("scan_market")=="forex" else []
         valid=[x for x in results if "error" not in x]
-        if valid:
-            names=[x["instrument"] for x in valid]
-            chosen_name=st.session_state.get("brain_selected_pair",names[0])
-            if chosen_name not in names: chosen_name=names[0]
-            chosen=next(x for x in valid if x["instrument"]==chosen_name)
-            st.markdown(f"**{chosen_name} · FOUR-BRAIN STATUS**")
-            st.metric("CONSENSUS DECISION",chosen["result"].get("signal","WAIT"),delta=f'CALL {chosen["result"].get("brain_votes",{}).get("CALL",0)}/4 · PUT {chosen["result"].get("brain_votes",{}).get("PUT",0)}/4')
-            render_brains(chosen["result"].get("brains",{}))
-            render_learning(chosen["result"].get("learning_profile", {}))
-            st.caption(chosen["result"].get("reason","Waiting for confluence."))
-            fusion=chosen["result"].get("fusion",{})
-            st.info(f"FUSION STATUS · {fusion.get('state','COLLECTING')} · Scores: CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
-        else:
-            render_brains({})
-    else:
-        output=st.session_state.get("deriv_output") if st.session_state.get("scan_market")=="deriv" else None
-        if output:
-            result=output["result"]; votes=result.get("brain_votes",{})
-            st.metric("FOUR-BRAIN DECISION",result.get("signal","WAIT"),delta=f'CALL {votes.get("CALL",0)}/4 · PUT {votes.get("PUT",0)}/4')
-            render_brains(result.get("brains",{}))
-            render_learning(result.get("learning_profile", {}))
+        if not valid: return None, None
+        names=[x["instrument"] for x in valid]
+        chosen_name=st.session_state.get("brain_selected_pair",names[0])
+        if chosen_name not in names: chosen_name=names[0]
+        chosen=next(x for x in valid if x["instrument"]==chosen_name)
+        return chosen["result"], chosen_name
+    output=st.session_state.get("deriv_output") if st.session_state.get("scan_market")=="deriv" else None
+    return (output["result"], GHOST_NAME) if output else (None, None)
+
+
+with left:
+    render_chart_area()
+
+with right:
+    result, instrument_name = selected_result()
+    tabs = st.tabs(["SIGNAL DECK", "FOUR BRAINS", "GHOST LEARNING", "MARKET CONTEXT"])
+    with tabs[0]:
+        st.markdown("**DECISION & TIMING**")
+        show_signal_pad(active_signal)
+        if result:
+            votes=result.get("brain_votes",{})
+            st.metric("FOUR-BRAIN DECISION",result.get("signal","WAIT"),
+                      delta=f'CALL {votes.get("CALL",0)}/4 · PUT {votes.get("PUT",0)}/4')
             st.caption(result.get("reason","Waiting for confluence."))
             fusion=result.get("fusion",{})
-            st.info(f"FUSION STATUS · {fusion.get('state','COLLECTING')} · Scores: CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
-            mtf=session_intelligence(output.get("ticks"),output.get("candles"),output.get("mtf_history"))
-            st.markdown("**HIGHER-TIMEFRAME CONTEXT**")
-            cols=st.columns(4)
-            for col,tf in zip(cols,("15m","1h","4h","1d")):
-                v=mtf.get(tf,{})
-                col.metric(tf,v.get("trend","—"),delta=v.get("state","COLLECTING"))
+            st.info(f"{fusion.get('state','COLLECTING')} · CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
+            render_experience_ai(result)
         else:
-            render_brains({})
+            st.markdown('<div class="brain-card"><div class="brain-state">WAITING FOR MARKET DATA</div><div class="brain-detail">No active signal or countdown is shown.</div></div>',unsafe_allow_html=True)
+    with tabs[1]:
+        st.markdown("**INTELLIGENCE BEHIND THIS DECISION**")
+        render_brains(result.get("brains",{}) if result else {})
+        if result:
+            st.caption("A WAIT vote is meaningful: that brain has not found sufficient directional evidence.")
+    with tabs[2]:
+        st.markdown("**EXPERIENCE & SELF-CALIBRATION**")
+        if result:
+            render_learning(result.get("learning_profile",{}))
+            render_experience_ai(result)
+            st.caption("The AI model trains on matured historical observations, validates on later unseen observations, and stays out of control when validation is weak.")
+        else:
+            st.caption("Learning begins after market observations are collected.")
+        st.download_button("EXPORT LEARNING BACKUP", data=learning_export_bytes(),
+                           file_name="ghost_learning_history.csv", mime="text/csv",
+                           use_container_width=True)
+        learning_backup = st.file_uploader("RESTORE LEARNING BACKUP", type=["csv"], key="ghost_learning_restore")
+        if learning_backup is not None:
+            try:
+                restored = import_learning_csv(learning_backup.getvalue())
+                st.success(f"Restored {restored} new observations.")
+            except Exception as exc:
+                st.error(f"Restore failed: {exc}")
+    with tabs[3]:
+        if result:
+            sr = result.get("support_resistance",{})
+            st.caption(f"Support {fmt_price(sr.get('support'))} · Resistance {fmt_price(sr.get('resistance'))}")
+            mtf = {}
+            if not market.startswith("Pocket"):
+                output=st.session_state.get("deriv_output") or {}
+                mtf=session_intelligence(output.get("ticks"),output.get("candles"),output.get("mtf_history"))
+            if mtf:
+                cols=st.columns(4)
+                for col,tf in zip(cols,("15m","1h","4h","1d")):
+                    v=mtf.get(tf,{})
+                    col.metric(tf,v.get("trend","—"),delta=v.get("state","COLLECTING"))
+            st.caption("Higher timeframes are context only. Synthetic tick frequency is an activity proxy, not traded volume.")
+        else:
+            st.caption("Market structure and higher-timeframe context appear when data is available.")
 
-st.markdown('<div class="small-muted" style="text-align:center;padding:5px">BLUE = bullish evidence · RED = bearish evidence · PURPLE = intelligence layer · WHITE = final decision · Conflicting evidence is exposed; weak consensus means WAIT.</div>',unsafe_allow_html=True)
-
-# Learning dataset export: user can preserve training history between deployments.
-st.download_button(
-    "EXPORT GHOST LEARNING HISTORY (CSV)",
-    data=learning_export_bytes(),
-    file_name="ghost_learning_history.csv",
-    mime="text/csv",
-    help="Download every recorded WAIT/consensus observation and its later outcome for backup and review."
-)
-learning_backup = st.file_uploader("RESTORE PREVIOUS GHOST LEARNING HISTORY (CSV)", type=["csv"], key="ghost_learning_restore")
-if learning_backup is not None:
-    try:
-        restored = import_learning_csv(learning_backup.getvalue())
-        st.success(f"Restored {restored} new learning observations. Existing records were safely skipped.")
-    except Exception as exc:
-        st.error(f"Learning-history restore failed: {exc}")
+st.markdown('<div class="small-muted" style="text-align:center;font-size:9px">BLUE = bullish · RED = bearish · PURPLE = intelligence · WHITE = decision · GHOST records WAIT states and learns only from matured outcomes.</div>',unsafe_allow_html=True)
 
 # ============================================================
 # FOOTER
 # ============================================================
-
-st.divider()
-st.caption(
-    "Research and demo alerting only — not financial advice. "
-    "GHOST 4.2 does not place trades. Deriv data and execution quotes "
-    "can differ. Confirm the live contract quote and timing. "
-    "No signal guarantees a profitable outcome."
-)
+st.caption("GHOST 4.3 is a research assistant, not an autonomous execution bot. Historical model validation does not guarantee future performance. Confirm platform quotes and expiry manually.")
