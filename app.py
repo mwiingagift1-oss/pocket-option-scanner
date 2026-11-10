@@ -1,4 +1,4 @@
-# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Fixed Timezone & Correct Entry/Expiry Window)
+# GHOST Protocol 3.0 - Desktop Trading Terminal UI (Tested & Fixed Syntax)
 
 import os
 import json
@@ -352,14 +352,14 @@ def main():
 
     now_cat = datetime.now(TZ)
     
-    st.markdown(f"""
+    clock_html = """
     <div class="term-header">
         <div>
             <h1 class="term-title">🛡️ GHOST PROTOCOL 3.0 • TERMINAL</h1>
             <span style="font-size:0.68rem; color:#94a3b8;">Volatility 100 (1s) Index • CAT Timezone Synchronized</span>
         </div>
         <div style="display:flex; align-items:center; gap:10px;">
-            <div id="liveClock" class="live-clock-pad">⏱️ {now_cat.strftime('%H:%M:%S')} CAT</div>
+            <div id="liveClock" class="live-clock-pad">⏱️ %s CAT</div>
         </div>
     </div>
     <script>
@@ -377,7 +377,9 @@ def main():
         }
         setInterval(updateClock, 1000);
     </script>
-    """, unsafe_allow_html=True)
+    """ % now_cat.strftime('%H:%M:%S')
+
+    st.markdown(clock_html, unsafe_allow_html=True)
 
     ticks = fetch_deriv_ticks(GHOST_SYMBOL, count=800)
     analysis = ghost_protocol(ticks, now_cat=now_cat)
