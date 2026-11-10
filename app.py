@@ -37,7 +37,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.3",
+    page_title="GHOST Protocol 4.3.1",
     page_icon="📡",
     layout="wide"
 )
@@ -45,10 +45,11 @@ st.set_page_config(
 st.markdown("""
 <style>
 :root{color-scheme:dark}
-html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:100%;overflow:hidden}
+/* Never clip the app: shorter laptop displays must be able to scroll. */
+html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:auto;min-height:100%;overflow-x:hidden;overflow-y:auto}
 
-.stApp{background:radial-gradient(ellipse at 15% 0%,#182d59 0%,#10152e 42%,#080d1c 100%);color:#f4f7ff}
-.block-container{max-width:100%;height:calc(100vh - 2px);overflow:hidden;padding:0.35rem .75rem .35rem}
+.stApp{background:radial-gradient(ellipse at 15% 0%,#182d59 0%,#10152e 42%,#080d1c 100%);color:#f4f7ff;min-height:100vh}
+.block-container{max-width:100%;height:auto;min-height:100vh;overflow:visible;padding:0.35rem .75rem .75rem}
 [data-testid="stSidebar"]{background:#0c1530;border-right:1px solid #263b72}
 [data-testid="stMetric"]{background:linear-gradient(145deg,#17264b,#171b3b);border:1px solid #344b88;padding:9px 12px;border-radius:13px;min-height:88px}
 [data-testid="stMetricLabel"]{color:#a9bce8!important;font-weight:800;letter-spacing:.08em}
@@ -67,8 +68,14 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:100%;
 .small-muted{color:#b3c0df;font-size:.78rem}
 h1,h2,h3{letter-spacing:-.02em;color:#f7f8ff}
 [data-testid="stPlotlyChart"]{border:1px solid #344a87;border-radius:10px;overflow:hidden;background:#0d1530;margin-bottom:0!important}
-[data-testid="stMainBlockContainer"]{padding-top:.35rem}
-section[data-testid="stMain"]{overflow-x:hidden}
+[data-testid="stMainBlockContainer"]{padding-top:.35rem;overflow:visible}
+section[data-testid="stMain"]{overflow-x:hidden;overflow-y:visible}
+/* Let tab labels wrap instead of hiding the last intelligence panels. */
+[data-testid="stTabs"] [role="tablist"]{flex-wrap:wrap;gap:3px;white-space:normal}
+[data-testid="stTabs"] button[role="tab"]{flex:1 1 auto;white-space:normal;min-height:34px}
+/* Avoid horizontal clipping of wide Streamlit widgets. */
+[data-testid="stHorizontalBlock"]{min-width:0}
+[data-testid="column"]{min-width:0}
 div[data-testid="stHorizontalBlock"]{gap:.55rem}
 .stButton>button{border-radius:11px;border:1px solid #657ce0;background:linear-gradient(90deg,#2859bc,#6536a5);color:white;font-weight:850;min-height:42px}
 .stButton>button:hover{border-color:#a8b8ff;color:white;box-shadow:0 0 14px #536be866}
@@ -76,12 +83,22 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 [data-testid="stMetric"]{padding:5px 7px!important;min-height:62px!important}
 [data-testid="stMetricValue"]{font-size:1.15rem!important}
 [data-testid="stVerticalBlock"]{gap:.35rem!important}
-@media(max-width:900px){html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:auto;overflow:auto}.block-container{height:auto;overflow:visible;padding:.5rem}.ghost-title{font-size:21px}}
+@media(max-width:1100px){
+  .block-container{padding:.45rem .55rem .8rem}
+  .ghost-title{font-size:21px}
+  [data-testid="stTabs"] button[role="tab"]{font-size:10px!important;padding:4px 5px!important}
+}
+@media(max-width:700px){
+  .block-container{padding:.35rem .4rem .8rem}
+  .ghost-title{font-size:19px}
+  .ghost-sub{font-size:10px}
+  [data-testid="stMetric"]{padding:5px 6px!important;min-height:56px!important}
+}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.3</div><div class="ghost-sub">EXPERIENCE-LEARNING AI · FOUR-BRAIN FUSION · EXPLAINABLE DECISIONS</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">MULTI-BRAIN MARKET INTELLIGENCE · MANUAL EXECUTION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.3.1 · DISPLAY FIX</div><div class="ghost-sub">EXPERIENCE-LEARNING AI · FOUR-BRAIN FUSION · EXPLAINABLE DECISIONS</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -1810,7 +1827,7 @@ def chart(df, title, levels=None):
             fig.add_hline(y=float(resistance),line_dash="dot",line_color="#b78aff",line_width=1.4,annotation_text="RESISTANCE",annotation_position="top right")
     fig.update_layout(
         title=dict(text=title,font=dict(size=15,color="#edf2ff")),
-        height=330, paper_bgcolor="#0c1430", plot_bgcolor="#0c1430",
+        height=300, paper_bgcolor="#0c1430", plot_bgcolor="#0c1430",
         font=dict(color="#c6d2f2",family="Arial"),
         xaxis_rangeslider_visible=False,
         margin=dict(l=8,r=8,t=42,b=8),
