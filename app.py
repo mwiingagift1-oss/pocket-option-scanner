@@ -544,6 +544,344 @@ def support_resistance_analysis(candles, lookback=80):
             "note":"Nearest confirmed pivot levels; context only, not staircase vetoes."}
 
 
+# ============================================================
+# DERIV PUBLIC WEBSOCKET CLIENT
+# ============================================================
+
+class DerivClient:
+    def __init__(self, timeout=20):
+        if websocket is None:
+            raise RuntimeError(
+                "Install websocket-client before connecting to Deriv."
+            )
+        self.timeout = timeout
+        self.ws = None
+        self.req_id = 0
+        self.last_activity = time.monotonic()
+        self.connect()
+
+    def connect(self):
+        self.close()
+        try:
+            self.ws = websocket.create_connection(
+                DERIV_PUBLIC_WS,
+                timeout=self.timeout
+            )
+            self.ws.settimeout(self.timeout)
+            self.last_activity = time.monotonic()
+        except Exception as exc:
+            raise RuntimeError(f"Could not connect to Deriv: {exc}")
+
+    def close(self):
+        if self.ws is not None:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+        self.ws = None
+
+    def request(self, payload):
+        if self.ws is None:
+            self.connect()
+
+        self.req_id += 1
+        request = dict(payload)
+        request["req_id"] = self.req_id
+        self.ws.send(json.dumps(request))
+
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            raw = self.ws.recv()
+            if not raw:
+                continue
+
+            message = json.loads(raw)
+            self.last_activity = time.monotonic()
+
+            if message.get("error"):
+                error = message["error"]
+                raise RuntimeError(
+                    error.get("message", "Deriv API error")
+                )
+
+            if message.get("req_id") == self.req_id:
+                return message
+
+        raise TimeoutError(
+            "Deriv did not respond before the request timed out."
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
+
+class DerivLiveFeed:
+    """Persistent public Deriv tick subscription with bounded history and reconnects."""
+    def __init__(self, symbol, seed_ticks=None, max_ticks=30000):
+        if websocket is None:
+            raise RuntimeError("websocket-client is required for the live Deriv feed.")
+        from collections import deque
+        import threading
+        self.symbol = symbol
+        self.max_ticks = max_ticks
+        self._ticks = deque(maxlen=max_ticks)
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._app = None
+        self._connected = False
+        self._last_message = None
+        self._last_error = None
+        self._reconnects = 0
+        if seed_ticks is not None and not seed_ticks.empty:
+            for row in seed_ticks[["datetime", "close"]].itertuples(index=False):
+                self._ticks.append({"datetime": pd.Timestamp(row.datetime), "close": float(row.close)})
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return self
+        import threading
+        self._thread = threading.Thread(target=self._run, name=f"DerivFeed-{self.symbol}", daemon=True)
+        self._thread.start()
+        return self
+
+    def _on_open(self, ws):
+        self._connected = True
+        self._last_error = None
+        ws.send(json.dumps({"ticks": self.symbol, "subscribe": 1}))
+
+    def _on_message(self, ws, raw):
+        try:
+            msg = json.loads(raw)
+            if msg.get("error"):
+                self._last_error = msg["error"].get("message", "Deriv stream error")
+                return
+            tick = msg.get("tick")
+            if not tick:
+                return
+            epoch = tick.get("epoch")
+            quote = tick.get("quote")
+            if epoch is None or quote is None:
+                return
+            item = {"datetime": pd.to_datetime(int(epoch), unit="s", utc=True), "close": float(quote)}
+            with self._lock:
+                # Ignore duplicate/out-of-order tick events, but retain same-second distinct quotes.
+                if self._ticks and item["datetime"] < self._ticks[-1]["datetime"]:
+                    return
+                if self._ticks and item["datetime"] == self._ticks[-1]["datetime"] and item["close"] == self._ticks[-1]["close"]:
+                    return
+                self._ticks.append(item)
+            self._last_message = time.time()
+        except Exception as exc:
+            self._last_error = f"Could not parse Deriv tick: {exc}"
+
+    def _on_error(self, ws, error):
+        self._connected = False
+        self._last_error = str(error)
+
+    def _on_close(self, ws, code, message):
+        self._connected = False
+
+    def _run(self):
+        delay = 1.0
+        while not self._stop.is_set():
+            try:
+                self._app = websocket.WebSocketApp(
+                    DERIV_PUBLIC_WS,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self._app.run_forever(ping_interval=25, ping_timeout=10)
+            except Exception as exc:
+                self._last_error = str(exc)
+            self._connected = False
+            if self._stop.is_set():
+                break
+            self._reconnects += 1
+            self._stop.wait(delay)
+            delay = min(delay * 1.7, 30.0)
+
+    def snapshot(self):
+        with self._lock:
+            rows = list(self._ticks)
+        return pd.DataFrame(rows, columns=["datetime", "close"])
+
+    def status(self):
+        age = None if self._last_message is None else max(0.0, time.time() - self._last_message)
+        return {"connected": self._connected, "last_tick_age": age, "last_error": self._last_error, "reconnects": self._reconnects}
+
+    def stop(self):
+        self._stop.set()
+        try:
+            if self._app is not None:
+                self._app.close()
+        except Exception:
+            pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2)
+
+
+# ============================================================
+# DERIV SYMBOL DISCOVERY AND TICK HISTORY
+# ============================================================
+
+def deriv_symbols(client):
+    data = client.request({"active_symbols": "brief"})
+    raw_symbols = data.get("active_symbols", [])
+    normalized = []
+
+    for item in raw_symbols:
+        row = dict(item)
+        symbol = (
+            row.get("underlying_symbol")
+            or row.get("symbol")
+            or ""
+        )
+        name = (
+            row.get("underlying_symbol_name")
+            or row.get("display_name")
+            or row.get("name")
+            or symbol
+        )
+        if symbol:
+            row["symbol"] = symbol
+            row["display_name"] = name
+            normalized.append(row)
+
+    return normalized
+
+
+def fetch_deriv_candle_history(symbol, count=5000, client=None, granularity=60):
+    """Fetch historical completed 1-minute OHLC candles for deep MTF context."""
+    if client is None:
+        with DerivClient(timeout=25) as temporary:
+            return fetch_deriv_candle_history(symbol, count, temporary, granularity)
+    data = client.request({
+        "ticks_history": symbol,
+        "adjust_start_time": 1,
+        "count": min(int(count), 5000),
+        "end": "latest",
+        "style": "candles",
+        "granularity": int(granularity)
+    })
+    rows = data.get("candles", [])
+    if not rows:
+        raise RuntimeError("Deriv returned no historical 1-minute candles.")
+    frame = pd.DataFrame(rows)
+    frame["datetime"] = pd.to_datetime(frame["epoch"], unit="s", utc=True, errors="coerce")
+    for col in ("open", "high", "low", "close"):
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame.dropna(subset=["datetime", "open", "high", "low", "close"])
+    return frame[["datetime", "open", "high", "low", "close"]].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
+
+
+def fetch_deriv_mtf_history(symbol, client):
+    """Fetch native Deriv candles so daily/4h baselines do not depend on 1m history depth."""
+    specs = {"15m": (900, 300), "1h": (3600, 240), "4h": (14400, 120), "1d": (86400, 90)}
+    histories, errors = {}, {}
+    for label, (granularity, count) in specs.items():
+        try:
+            histories[label] = fetch_deriv_candle_history(symbol, count, client, granularity)
+        except Exception as exc:
+            histories[label] = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
+            errors[label] = str(exc)
+    return histories, errors
+
+
+def merge_candle_history(live_candles, historical_candles):
+    """Historical 1m candles plus live tick-derived updates; live wins per minute."""
+    frames = [x for x in (historical_candles, live_candles) if x is not None and not x.empty]
+    if not frames:
+        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
+    merged = pd.concat(frames, ignore_index=True)
+    merged["datetime"] = pd.to_datetime(merged["datetime"], utc=True, errors="coerce")
+    merged = merged.dropna(subset=["datetime", "open", "high", "low", "close"])
+    return merged.sort_values("datetime").drop_duplicates("datetime", keep="last").reset_index(drop=True)
+
+
+def fetch_deriv_ticks(symbol, count=4500, client=None):
+    if client is None:
+        with DerivClient(timeout=25) as temporary:
+            return fetch_deriv_ticks(symbol, count, temporary)
+
+    data = client.request({
+        "ticks_history": symbol,
+        "adjust_start_time": 1,
+        "count": count,
+        "end": "latest",
+        "style": "ticks"
+    })
+
+    history = data.get("history", {})
+    prices = history.get("prices", [])
+    times = history.get("times", [])
+
+    if not prices or not times or len(prices) != len(times):
+        raise RuntimeError("Deriv returned insufficient tick history.")
+
+    df = pd.DataFrame({
+        "datetime": pd.to_datetime(times, unit="s", utc=True),
+        "close": pd.to_numeric(prices, errors="coerce")
+    })
+
+    # Keep multiple ticks sharing the same second: they may contain
+    # important intrasecond price movement for OHLC construction.
+    df = (
+        df.dropna(subset=["datetime", "close"])
+        .sort_values("datetime", kind="stable")
+        .reset_index(drop=True)
+    )
+
+    if len(df) < 900:
+        raise RuntimeError(
+            "Not enough tick history for multi-timeframe analysis."
+        )
+
+    return df
+
+
+# ============================================================
+# GHOST CANDLE CONSTRUCTION
+# ============================================================
+
+def ticks_to_candles(ticks):
+    series = (
+        ticks.set_index("datetime")["close"]
+        .sort_index(kind="stable")
+    )
+    candles = series.resample("1min").ohlc()
+    return candles.dropna().reset_index()
+
+
+def aggregate_timeframe(one_minute, minutes):
+    data = one_minute.set_index("datetime").copy()
+    data["_observed"] = 1
+    result = data.resample(
+        f"{minutes}min",
+        label="left",
+        closed="left"
+    ).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "_observed": "sum"
+    }).dropna().reset_index().rename(columns={"_observed": "observed_minutes"})
+
+    now = pd.Timestamp.now(tz="UTC").floor("min")
+    result = result[
+        (result.datetime + pd.Timedelta(minutes=minutes) <= now)
+        & (result.observed_minutes >= minutes)
+    ]
+    return result.drop(columns=["observed_minutes"]).reset_index(drop=True)
+
+
+
 def ghost_protocol(ticks):
     """Evaluate the Three-Step sequence as one independent intelligence input."""
     if ticks is None or ticks.empty:
