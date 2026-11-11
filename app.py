@@ -300,790 +300,103 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
 # ============================================================
 # FOUR-BRAIN SIGNAL FUSION — ALL FOUR SYSTEMS VOTE
 # ============================================================
-def four_brain_decision(candles, staircase_result, strength=2, min_steps=3, pullback_pct=50, learned_weights=None):
-    """Role-aware fusion: distinguish directional evidence from contextual observations."""
+def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
+                        pullback_pct=50, learned_weights=None,
+                        structure_candles=None):
+    """Strict A/B/C/D adaptive confluence. All inputs must be completed candles."""
     base = dict(staircase_result or {})
+    empty = {"signal": "WAIT", "stage": "SCANNING", "brains": {},
+             "fusion": {"state": "COLLECTING"}, "brain_scores": {}}
     if candles is None or len(candles) < 30:
-        base.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Collecting sufficient completed candles for all four intelligence systems.", "brains":{}, "fusion":{}})
+        base.update(empty)
+        base["reason"] = "Collecting completed 1-minute candles for the timing and confirmation brains."
+        return base
+    d = candles.copy().reset_index(drop=True)
+    structure = structure_candles.copy().reset_index(drop=True) if structure_candles is not None else aggregate_timeframe(d, 5)
+    if structure is None or len(structure) < 20:
+        base.update(empty)
+        base["reason"] = "Waiting for enough completed 5-minute structure candles."
         return base
 
-    d = candles.copy().reset_index(drop=True)
-    three = three_steps(d, strength, min_steps, pullback_pct)
-    bible = candle_bible_analysis(d)
-    sakata = homma_sakata_analysis(d)
-    sr = support_resistance_analysis(d)
+    # A — 3-Stairs: pure confirmed swing sequence on completed 5m structure.
+    highs, lows = confirmed_pivots(structure, strength)
+    hs, ls = highs[-3:], lows[-3:]
+    bull_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] > hs[i-1][1] for i in (1,2)) and all(ls[i][1] > ls[i-1][1] for i in (1,2))
+    bear_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] < hs[i-1][1] for i in (1,2)) and all(ls[i][1] < ls[i-1][1] for i in (1,2))
+    direction_a = "CALL" if bull_a else "PUT" if bear_a else "WAIT"
+    score_a = 2 if direction_a != "WAIT" else 0
+
+    # B — S/R location: count pivot touches around nearest confirmed levels.
+    sr = support_resistance_analysis(structure, lookback=120)
     last = d.iloc[-1]
     price = float(last.close)
-    body = abs(float(last.close) - float(last.open))
-    span = max(float(last.high) - float(last.low), 1e-12)
-    lower = float(min(last.open, last.close) - last.low)
-    upper = float(last.high - max(last.open, last.close))
-    tol = max(abs(price) * 0.0008, span * 0.35)
-    support, resistance = sr.get("support"), sr.get("resistance")
-    near_support = support is not None and abs(price - float(support)) <= tol
-    near_resistance = resistance is not None and abs(price - float(resistance)) <= tol
+    ranges = (structure.high.astype(float) - structure.low.astype(float)).tail(20)
+    tolerance = max(float(ranges.median()) * 0.18, abs(price) * 0.00015, 1e-12)
+    sup, res = sr.get("support"), sr.get("resistance")
+    support_touches = sum(abs(float(v)-float(sup)) <= tolerance for _,v in lows[-30:]) if sup is not None else 0
+    resistance_touches = sum(abs(float(v)-float(res)) <= tolerance for _,v in highs[-30:]) if res is not None else 0
+    at_support = sup is not None and abs(price-float(sup)) <= tolerance * 1.8
+    at_resistance = res is not None and abs(price-float(res)) <= tolerance * 1.8
+    level_direction = "CALL" if at_support and not at_resistance else "PUT" if at_resistance and not at_support else "WAIT"
+    touches = support_touches if level_direction == "CALL" else resistance_touches if level_direction == "PUT" else 0
+    level_score = 2 if level_direction != "WAIT" and touches >= 2 else 1 if level_direction != "WAIT" else 0
 
-    # Each system has a different job and weight. A pattern/location label is not
-    # automatically converted into a directional vote.
-    base_weights = {"THREE STEPS": 3.0, "CANDLE BIBLE": 2.0,
-                    "HOMMA / SAKATA": 1.5, "SUPPORT / RESISTANCE": 2.0}
-    learned_weights = learned_weights or {}
-    weights = {name: round(weight * float(learned_weights.get(name, 1.0)), 3)
-               for name, weight in base_weights.items()}
-    votes = {name: "WAIT" for name in weights}
-    details = {}
-
-    ts_vote = three.get("signal", "WAIT")
-    if ts_vote in ("CALL", "PUT"):
-        votes["THREE STEPS"] = ts_vote
-    details["THREE STEPS"] = three.get("reason", "No confirmed staircase structure.")
-
-    # Candle Bible requires a recognisable directional pattern, not merely the
-    # colour/location of the last candle. Indecision and mixed evidence stay neutral.
+    # C — Candle Bible: latest closed 1m candle only; require directional pattern and >50% body.
+    bible = candle_bible_analysis(d)
     patterns = [str(x).upper() for x in bible.get("patterns", [])]
-    bull_candle_terms = ("BULLISH ENGULFING", "HAMMER-LIKE", "THREE WHITE SOLDIERS",
-                         "PIERCING LINE", "MORNING STAR", "BULLISH MARUBOZU")
-    bear_candle_terms = ("BEARISH ENGULFING", "SHOOTING-STAR", "THREE BLACK CROWS",
-                         "DARK CLOUD", "EVENING STAR", "BEARISH MARUBOZU")
-    bull_candle = any(any(term in p for term in bull_candle_terms) for p in patterns)
-    bear_candle = any(any(term in p for term in bear_candle_terms) for p in patterns)
-    if bull_candle and not bear_candle:
-        votes["CANDLE BIBLE"] = "CALL"
-    elif bear_candle and not bull_candle:
-        votes["CANDLE BIBLE"] = "PUT"
-    details["CANDLE BIBLE"] = ", ".join(bible.get("patterns", [])) + f" · {bible.get('bias', 'MIXED')}"
+    bull_terms = ("BULLISH ENGULFING", "HAMMER", "PIERCING LINE", "MORNING STAR", "BULLISH MARUBOZU", "THREE WHITE SOLDIERS")
+    bear_terms = ("BEARISH ENGULFING", "SHOOTING-STAR", "DARK CLOUD", "EVENING STAR", "BEARISH MARUBOZU", "THREE BLACK CROWS")
+    bull_c = any(any(t in x for t in bull_terms) for x in patterns)
+    bear_c = any(any(t in x for t in bear_terms) for x in patterns)
+    body = abs(float(last.close)-float(last.open))
+    span = max(float(last.high)-float(last.low), 1e-12)
+    body_ratio = body/span
+    candle_dir = "CALL" if bull_c and not bear_c and float(last.close)>float(last.open) else "PUT" if bear_c and not bull_c and float(last.close)<float(last.open) else "WAIT"
+    trigger_direction = candle_dir if level_direction == candle_dir and body_ratio > 0.50 else "WAIT"
+    trigger_score = 2 if trigger_direction != "WAIT" else 0
 
-    # Sakata formations like Three Mountains / Three Rivers describe repeated
-    # resistance/support; they are not directional reversal confirmation alone.
-    # Only explicit directional continuation formations can vote.
-    sakata_obs = [str(x).upper() for x in sakata.get("observations", [])]
-    sakata_bull = any(("THREE METHODS BULLISH" in x) or
-                      ("THREE PARALLEL LINES" in x and "BULLISH" in x) for x in sakata_obs)
-    sakata_bear = any(("THREE METHODS BEARISH" in x) or
-                      ("THREE PARALLEL LINES" in x and "BEARISH" in x) for x in sakata_obs)
-    if sakata_bull and not sakata_bear:
-        votes["HOMMA / SAKATA"] = "CALL"
-    elif sakata_bear and not sakata_bull:
-        votes["HOMMA / SAKATA"] = "PUT"
-    details["HOMMA / SAKATA"] = ", ".join(sakata.get("observations", []))
+    # D — existing Homma/Sakata engine used as confirmation, not independent entry authority.
+    sakata = homma_sakata_analysis(d)
+    observations = [str(x).upper() for x in sakata.get("observations", [])]
+    d_bull = any("THREE METHODS BULLISH" in x or "THREE PARALLEL LINES" in x and "BULLISH" in x for x in observations)
+    d_bear = any("THREE METHODS BEARISH" in x or "THREE PARALLEL LINES" in x and "BEARISH" in x for x in observations)
+    homma_direction = "CALL" if d_bull and not d_bear else "PUT" if d_bear and not d_bull else "WAIT"
+    conf_score = 1 if homma_direction == trigger_direction and trigger_direction != "WAIT" else 0
+    disagreement = homma_direction in ("CALL", "PUT") and trigger_direction in ("CALL", "PUT") and homma_direction != trigger_direction
 
-    # S/R votes only when price is at a confirmed level and the candle rejects it.
-    sr_call = near_support and lower > max(body * 1.15, span * 0.28) and float(last.close) > float(last.open)
-    sr_put = near_resistance and upper > max(body * 1.15, span * 0.28) and float(last.close) < float(last.open)
-    if sr_call and not sr_put:
-        votes["SUPPORT / RESISTANCE"] = "CALL"
-    elif sr_put and not sr_call:
-        votes["SUPPORT / RESISTANCE"] = "PUT"
-    sr_context = []
-    if near_support: sr_context.append("testing support")
-    if near_resistance: sr_context.append("testing resistance")
-    if not sr_context: sr_context.append("not at a confirmed nearby level")
-    details["SUPPORT / RESISTANCE"] = (
-        f"{'; '.join(sr_context)} · Support {fmt_price(support) if support is not None else '—'}"
-        f" · Resistance {fmt_price(resistance) if resistance is not None else '—'}"
-    )
+    total = score_a + level_score + trigger_score + conf_score
+    aligned = direction_a == trigger_direction and direction_a != "WAIT"
+    hard_reasons=[]
+    if direction_a == "WAIT": hard_reasons.append("3-Stairs structure is neutral")
+    if level_direction == "WAIT": hard_reasons.append("price is not at a valid support/resistance level")
+    if trigger_direction == "WAIT": hard_reasons.append("no qualifying closed 1m candle trigger")
+    if disagreement: hard_reasons.append("Homma/Sakata confirmation disagrees")
+    if not aligned: hard_reasons.append("structure and trigger directions do not align")
+    if total < 5: hard_reasons.append("confluence score is below 5")
 
-    scores = {direction: sum(weights[name] for name, vote in votes.items() if vote == direction)
-              for direction in ("CALL", "PUT")}
-    supporters = {direction: [name for name, vote in votes.items() if vote == direction]
-                  for direction in ("CALL", "PUT")}
-    # Context-only Sakata candidates are disclosed, but never counted as a vote.
-    candidate = "WAIT"
-    lead = abs(scores["CALL"] - scores["PUT"])
-    top = "CALL" if scores["CALL"] > scores["PUT"] else "PUT" if scores["PUT"] > scores["CALL"] else "WAIT"
-    min_score = 4.0
-    min_systems = 2
-    direction = (
-        top
-        if top in supporters
-        and scores[top] >= min_score
-        and len(supporters[top]) >= min_systems
-        and lead >= 2.5
-        else "WAIT"
-    )
-
-    # Feed/sequence invalidation remains a hard safety stop. A disagreement is
-    # not silently resolved: it is shown as CONFLICT / WAIT with its causes.
-    hard_block = base.get("stage") in ("FEED CHECK", "INVALIDATED")
-    if hard_block:
-        direction = "WAIT"
-    conflict_names = [name for name, vote in votes.items()
-                      if vote in ("CALL", "PUT") and direction != "WAIT" and vote != direction]
-    if direction == "WAIT" and scores["CALL"] > 0 and scores["PUT"] > 0:
-        conflict_state = "DIRECT CONFLICT"
-    elif direction == "WAIT" and (scores["CALL"] > 0 or scores["PUT"] > 0):
-        conflict_state = "WEAK / INSUFFICIENT CONFLUENCE"
-    elif direction == "WAIT":
-        conflict_state = "NO DIRECTIONAL SETUP"
-    else:
-        conflict_state = "ALIGNED WITH OPPOSING EVIDENCE" if conflict_names else "ALIGNED"
-
+    # Score tiers are informational signal strength only; no orders are placed.
+    tier = 1.0 if total >= 7 and trigger_score == 2 else 0.75 if total == 6 else 0.50 if total == 5 and trigger_score == 2 else 0.0
+    approved = not hard_reasons and tier > 0
+    signal = trigger_direction if approved else "WAIT"
     brains = {
-        name: {"vote": votes[name], "weight": weights[name], "detail": details[name],
-               "role": {"THREE STEPS":"Structure / trend trigger", "CANDLE BIBLE":"Candle confirmation",
-                        "HOMMA / SAKATA":"Classical formation context", "SUPPORT / RESISTANCE":"Location / rejection filter"}[name]}
-        for name in weights
+        "THREE STEPS": {"vote": direction_a, "score": score_a, "detail": "5m confirmed HH/HL or LH/LL structure"},
+        "SUPPORT / RESISTANCE": {"vote": level_direction, "score": level_score, "detail": f"Support touches {support_touches}; resistance touches {resistance_touches}"},
+        "CANDLE BIBLE": {"vote": trigger_direction, "score": trigger_score, "detail": f"Closed 1m body {body_ratio:.0%}; {', '.join(patterns)}"},
+        "HOMMA / SAKATA": {"vote": homma_direction, "score": conf_score, "detail": '; '.join(observations)},
     }
     base.update({
-        "signal": direction, "brains": brains, "brain_votes": {"CALL":len(supporters["CALL"]), "PUT":len(supporters["PUT"])},
-        "brain_scores": scores, "candle_bible": bible, "sakata": sakata,
-        "support_resistance": sr, "three_steps_result": three,
-        "fusion": {"state":conflict_state, "scores":scores, "supporters":supporters,
-                   "conflicts":conflict_names, "minimum_score":min_score,
-                   "minimum_systems":min_systems, "weights":weights}
+        "signal": signal, "stage": "ENTRY READY" if approved else "SCANNING",
+        "price": price, "candle_time": last.datetime,
+        "brains": brains, "brain_votes": {"CALL": sum(v["vote"]=="CALL" for v in brains.values()), "PUT": sum(v["vote"]=="PUT" for v in brains.values())},
+        "brain_scores": {"CALL": total if signal=="CALL" else 0, "PUT": total if signal=="PUT" else 0},
+        "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
+        "three_steps_result": {"signal": direction_a, "highs": hs, "lows": ls},
+        "fusion": {"state": "APPROVED" if approved else "BLOCKED", "module_scores": {"A":score_a,"B":level_score,"C":trigger_score,"D":conf_score}, "total_score":total, "size_tier":tier, "block_reasons":hard_reasons},
+        "reason": (f"Adaptive confluence approved · score {total}/7 · indicative size tier {tier:.0%}." if approved else "GHOST blocked this setup: " + '; '.join(hard_reasons)),
+        "entry_point": price if approved else None,
+        "supporting_brains": [name for name,v in brains.items() if v["vote"]==signal] if approved else [],
     })
-
-    if direction in ("CALL", "PUT") and not hard_block:
-        aligned = supporters[direction]
-        opposing = [name for name, vote in votes.items() if vote in ("CALL", "PUT") and vote != direction]
-        base["stage"] = "ENTRY READY"
-        base["entry_time"] = now_cat().replace(second=0, microsecond=0)
-        base["price"] = price
-        base["entry_point"] = price
-        base["candle_time"] = d.datetime.iloc[-1]
-        base["reason"] = (
-            f"Weighted confluence {scores[direction]:.1f} vs {scores['PUT' if direction == 'CALL' else 'CALL']:.1f}. "
-            f"Supporting systems: {', '.join(aligned)}. "
-            + (f"Conflicting evidence: {', '.join(opposing)}." if opposing else "No opposing directional votes.")
-        )
-        base["supporting_brains"] = aligned
-    else:
-        base["signal"] = "WAIT"
-        if hard_block:
-            base["stage"] = "FEED CHECK" if base.get("stage") == "FEED CHECK" else "INVALIDATED"
-            base["reason"] = base.get("reason", "Hard safety block: feed or sequence invalidation.")
-        else:
-            base["stage"] = "CONFLICT / WAIT" if conflict_state == "DIRECT CONFLICT" else "SCANNING"
-            base["reason"] = (
-                f"{conflict_state}. CALL score {scores['CALL']:.1f}; PUT score {scores['PUT']:.1f}. "
-                f"Need at least {min_score:.1f} points from {min_systems} independent systems and a clear margin."
-            )
     return base
-
-
-# ============================================================
-# DERIV PUBLIC WEBSOCKET CLIENT
-# ============================================================
-
-class DerivClient:
-    def __init__(self, timeout=20):
-        if websocket is None:
-            raise RuntimeError(
-                "Install websocket-client before connecting to Deriv."
-            )
-        self.timeout = timeout
-        self.ws = None
-        self.req_id = 0
-        self.last_activity = time.monotonic()
-        self.connect()
-
-    def connect(self):
-        self.close()
-        try:
-            self.ws = websocket.create_connection(
-                DERIV_PUBLIC_WS,
-                timeout=self.timeout
-            )
-            self.ws.settimeout(self.timeout)
-            self.last_activity = time.monotonic()
-        except Exception as exc:
-            raise RuntimeError(f"Could not connect to Deriv: {exc}")
-
-    def close(self):
-        if self.ws is not None:
-            try:
-                self.ws.close()
-            except Exception:
-                pass
-        self.ws = None
-
-    def request(self, payload):
-        if self.ws is None:
-            self.connect()
-
-        self.req_id += 1
-        request = dict(payload)
-        request["req_id"] = self.req_id
-        self.ws.send(json.dumps(request))
-
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            raw = self.ws.recv()
-            if not raw:
-                continue
-
-            message = json.loads(raw)
-            self.last_activity = time.monotonic()
-
-            if message.get("error"):
-                error = message["error"]
-                raise RuntimeError(
-                    error.get("message", "Deriv API error")
-                )
-
-            if message.get("req_id") == self.req_id:
-                return message
-
-        raise TimeoutError(
-            "Deriv did not respond before the request timed out."
-        )
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
-
-
-class DerivLiveFeed:
-    """Persistent public Deriv tick subscription with bounded history and reconnects."""
-    def __init__(self, symbol, seed_ticks=None, max_ticks=30000):
-        if websocket is None:
-            raise RuntimeError("websocket-client is required for the live Deriv feed.")
-        from collections import deque
-        import threading
-        self.symbol = symbol
-        self.max_ticks = max_ticks
-        self._ticks = deque(maxlen=max_ticks)
-        self._lock = threading.RLock()
-        self._stop = threading.Event()
-        self._thread = None
-        self._app = None
-        self._connected = False
-        self._last_message = None
-        self._last_error = None
-        self._reconnects = 0
-        if seed_ticks is not None and not seed_ticks.empty:
-            for row in seed_ticks[["datetime", "close"]].itertuples(index=False):
-                self._ticks.append({"datetime": pd.Timestamp(row.datetime), "close": float(row.close)})
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return self
-        import threading
-        self._thread = threading.Thread(target=self._run, name=f"DerivFeed-{self.symbol}", daemon=True)
-        self._thread.start()
-        return self
-
-    def _on_open(self, ws):
-        self._connected = True
-        self._last_error = None
-        ws.send(json.dumps({"ticks": self.symbol, "subscribe": 1}))
-
-    def _on_message(self, ws, raw):
-        try:
-            msg = json.loads(raw)
-            if msg.get("error"):
-                self._last_error = msg["error"].get("message", "Deriv stream error")
-                return
-            tick = msg.get("tick")
-            if not tick:
-                return
-            epoch = tick.get("epoch")
-            quote = tick.get("quote")
-            if epoch is None or quote is None:
-                return
-            item = {"datetime": pd.to_datetime(int(epoch), unit="s", utc=True), "close": float(quote)}
-            with self._lock:
-                # Ignore duplicate/out-of-order tick events, but retain same-second distinct quotes.
-                if self._ticks and item["datetime"] < self._ticks[-1]["datetime"]:
-                    return
-                if self._ticks and item["datetime"] == self._ticks[-1]["datetime"] and item["close"] == self._ticks[-1]["close"]:
-                    return
-                self._ticks.append(item)
-            self._last_message = time.time()
-        except Exception as exc:
-            self._last_error = f"Could not parse Deriv tick: {exc}"
-
-    def _on_error(self, ws, error):
-        self._connected = False
-        self._last_error = str(error)
-
-    def _on_close(self, ws, code, message):
-        self._connected = False
-
-    def _run(self):
-        delay = 1.0
-        while not self._stop.is_set():
-            try:
-                self._app = websocket.WebSocketApp(
-                    DERIV_PUBLIC_WS,
-                    on_open=self._on_open,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                )
-                self._app.run_forever(ping_interval=25, ping_timeout=10)
-            except Exception as exc:
-                self._last_error = str(exc)
-            self._connected = False
-            if self._stop.is_set():
-                break
-            self._reconnects += 1
-            self._stop.wait(delay)
-            delay = min(delay * 1.7, 30.0)
-
-    def snapshot(self):
-        with self._lock:
-            rows = list(self._ticks)
-        return pd.DataFrame(rows, columns=["datetime", "close"])
-
-    def status(self):
-        age = None if self._last_message is None else max(0.0, time.time() - self._last_message)
-        return {"connected": self._connected, "last_tick_age": age, "last_error": self._last_error, "reconnects": self._reconnects}
-
-    def stop(self):
-        self._stop.set()
-        try:
-            if self._app is not None:
-                self._app.close()
-        except Exception:
-            pass
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2)
-
-
-# ============================================================
-# DERIV SYMBOL DISCOVERY AND TICK HISTORY
-# ============================================================
-
-def deriv_symbols(client):
-    data = client.request({"active_symbols": "brief"})
-    raw_symbols = data.get("active_symbols", [])
-    normalized = []
-
-    for item in raw_symbols:
-        row = dict(item)
-        symbol = (
-            row.get("underlying_symbol")
-            or row.get("symbol")
-            or ""
-        )
-        name = (
-            row.get("underlying_symbol_name")
-            or row.get("display_name")
-            or row.get("name")
-            or symbol
-        )
-        if symbol:
-            row["symbol"] = symbol
-            row["display_name"] = name
-            normalized.append(row)
-
-    return normalized
-
-
-def fetch_deriv_candle_history(symbol, count=5000, client=None, granularity=60):
-    """Fetch historical completed 1-minute OHLC candles for deep MTF context."""
-    if client is None:
-        with DerivClient(timeout=25) as temporary:
-            return fetch_deriv_candle_history(symbol, count, temporary, granularity)
-    data = client.request({
-        "ticks_history": symbol,
-        "adjust_start_time": 1,
-        "count": min(int(count), 5000),
-        "end": "latest",
-        "style": "candles",
-        "granularity": int(granularity)
-    })
-    rows = data.get("candles", [])
-    if not rows:
-        raise RuntimeError("Deriv returned no historical 1-minute candles.")
-    frame = pd.DataFrame(rows)
-    frame["datetime"] = pd.to_datetime(frame["epoch"], unit="s", utc=True, errors="coerce")
-    for col in ("open", "high", "low", "close"):
-        frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame = frame.dropna(subset=["datetime", "open", "high", "low", "close"])
-    return frame[["datetime", "open", "high", "low", "close"]].sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
-
-
-def fetch_deriv_mtf_history(symbol, client):
-    """Fetch native Deriv candles so daily/4h baselines do not depend on 1m history depth."""
-    specs = {"15m": (900, 300), "1h": (3600, 240), "4h": (14400, 120), "1d": (86400, 90)}
-    histories, errors = {}, {}
-    for label, (granularity, count) in specs.items():
-        try:
-            histories[label] = fetch_deriv_candle_history(symbol, count, client, granularity)
-        except Exception as exc:
-            histories[label] = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
-            errors[label] = str(exc)
-    return histories, errors
-
-
-def merge_candle_history(live_candles, historical_candles):
-    """Historical 1m candles plus live tick-derived updates; live wins per minute."""
-    frames = [x for x in (historical_candles, live_candles) if x is not None and not x.empty]
-    if not frames:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
-    merged = pd.concat(frames, ignore_index=True)
-    merged["datetime"] = pd.to_datetime(merged["datetime"], utc=True, errors="coerce")
-    merged = merged.dropna(subset=["datetime", "open", "high", "low", "close"])
-    return merged.sort_values("datetime").drop_duplicates("datetime", keep="last").reset_index(drop=True)
-
-
-def fetch_deriv_ticks(symbol, count=4500, client=None):
-    if client is None:
-        with DerivClient(timeout=25) as temporary:
-            return fetch_deriv_ticks(symbol, count, temporary)
-
-    data = client.request({
-        "ticks_history": symbol,
-        "adjust_start_time": 1,
-        "count": count,
-        "end": "latest",
-        "style": "ticks"
-    })
-
-    history = data.get("history", {})
-    prices = history.get("prices", [])
-    times = history.get("times", [])
-
-    if not prices or not times or len(prices) != len(times):
-        raise RuntimeError("Deriv returned insufficient tick history.")
-
-    df = pd.DataFrame({
-        "datetime": pd.to_datetime(times, unit="s", utc=True),
-        "close": pd.to_numeric(prices, errors="coerce")
-    })
-
-    # Keep multiple ticks sharing the same second: they may contain
-    # important intrasecond price movement for OHLC construction.
-    df = (
-        df.dropna(subset=["datetime", "close"])
-        .sort_values("datetime", kind="stable")
-        .reset_index(drop=True)
-    )
-
-    if len(df) < 900:
-        raise RuntimeError(
-            "Not enough tick history for multi-timeframe analysis."
-        )
-
-    return df
-
-
-# ============================================================
-# GHOST CANDLE CONSTRUCTION
-# ============================================================
-
-def ticks_to_candles(ticks):
-    series = (
-        ticks.set_index("datetime")["close"]
-        .sort_index(kind="stable")
-    )
-    candles = series.resample("1min").ohlc()
-    return candles.dropna().reset_index()
-
-
-def aggregate_timeframe(one_minute, minutes):
-    data = one_minute.set_index("datetime").copy()
-    data["_observed"] = 1
-    result = data.resample(
-        f"{minutes}min",
-        label="left",
-        closed="left"
-    ).agg({
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "_observed": "sum"
-    }).dropna().reset_index().rename(columns={"_observed": "observed_minutes"})
-
-    now = pd.Timestamp.now(tz="UTC").floor("min")
-    result = result[
-        (result.datetime + pd.Timedelta(minutes=minutes) <= now)
-        & (result.observed_minutes >= minutes)
-    ]
-    return result.drop(columns=["observed_minutes"]).reset_index(drop=True)
-
-
-def session_intelligence(ticks, one_minute, timeframe_history=None):
-    """Measure candle-range and tick-activity context; tick count is NOT volume."""
-    result = {}
-    if one_minute is None or one_minute.empty:
-        return result
-    now_utc = pd.Timestamp.now(tz="UTC")
-    completed_1m = one_minute.copy()
-    completed_1m["datetime"] = pd.to_datetime(completed_1m["datetime"], utc=True)
-    completed_1m = completed_1m[completed_1m.datetime + pd.Timedelta(minutes=1) <= now_utc]
-    if completed_1m.empty:
-        return result
-    for label, minutes in (("15m", 15), ("1h", 60), ("4h", 240), ("1d", 1440)):
-        native = (timeframe_history or {}).get(label)
-        if native is not None and not native.empty:
-            bars = native.copy()
-            bars["datetime"] = pd.to_datetime(bars["datetime"], utc=True, errors="coerce")
-            bars = bars.dropna(subset=["datetime", "open", "high", "low", "close"])
-            bars = bars[bars.datetime + pd.Timedelta(minutes=minutes) <= now_utc].reset_index(drop=True)
-        else:
-            bars = aggregate_timeframe(completed_1m, minutes)
-        if bars.empty:
-            result[label] = {"bars": 0, "range": None, "average": None, "state": "COLLECTING"}
-            continue
-        bars = bars.copy()
-        bars["range"] = bars.high - bars.low
-        close_series = bars.close.astype(float)
-        ema_fast = close_series.ewm(span=9, adjust=False).mean()
-        ema_slow = close_series.ewm(span=21, adjust=False).mean()
-        if len(bars) >= 21 and ema_fast.iloc[-1] > ema_slow.iloc[-1] and close_series.iloc[-1] > ema_fast.iloc[-1]:
-            trend = "BULLISH"
-        elif len(bars) >= 21 and ema_fast.iloc[-1] < ema_slow.iloc[-1] and close_series.iloc[-1] < ema_fast.iloc[-1]:
-            trend = "BEARISH"
-        else:
-            trend = "MIXED / BUILDING"
-        latest = float(bars.range.iloc[-1])
-        prior_ranges = bars.range.iloc[:-1].tail(20)
-        if len(prior_ranges) < 5:
-            result[label] = {"bars": len(bars), "range": latest, "average": None, "ratio": None, "state": "COLLECTING BASELINE", "trend": trend}
-            continue
-        baseline = float(prior_ranges.mean())
-        ratio = latest / baseline if baseline > 0 else None
-        state = "EXPANDING" if ratio is not None and ratio >= 1.35 else "CONTRACTING" if ratio is not None and ratio <= 0.70 else "NORMAL" if ratio is not None else "COLLECTING BASELINE"
-        result[label] = {"bars": len(bars), "range": latest, "average": baseline, "ratio": ratio, "state": state, "trend": trend}
-    # Activity proxy: number of received ticks per completed minute. Not exchange volume.
-    if ticks is not None and not ticks.empty:
-        tick_data = ticks.copy()
-        tick_data["datetime"] = pd.to_datetime(tick_data["datetime"], utc=True)
-        counts = tick_data.set_index("datetime").resample("1min").size()
-        counts = counts[counts.index + pd.Timedelta(minutes=1) <= now_utc]
-        if not counts.empty:
-            recent_window = counts.tail(15)
-            prior_window = counts.iloc[:-15].tail(120)
-            recent = float(recent_window.mean())
-            baseline = float(prior_window.mean()) if len(prior_window) >= 15 else None
-            activity_state = ("ABOVE BASELINE" if recent > baseline * 1.25 else "BELOW BASELINE" if recent < baseline * 0.75 else "NORMAL") if baseline and baseline > 0 else "COLLECTING BASELINE"
-            result["tick_activity"] = {"recent_per_min": recent, "baseline_per_min": baseline, "state": activity_state}
-        # Hour-of-day CAT profile from observed ticks; descriptive only.
-        local = tick_data.datetime.dt.tz_convert("Africa/Lusaka")
-        hourly = pd.DataFrame({"hour": local.dt.hour, "tick": 1}).groupby("hour").tick.sum()
-        result["hour_profile"] = {int(k): int(v) for k, v in hourly.items()}
-        range_frame = completed_1m.copy()
-        range_frame["local_hour"] = range_frame.datetime.dt.tz_convert("Africa/Lusaka").dt.hour
-        range_frame["four_hour_block"] = (range_frame.local_hour // 4) * 4
-        range_frame["range"] = range_frame.high - range_frame.low
-        result["hour_range_profile"] = {
-            int(hour): {"average_range": float(group.range.mean()), "bars": int(len(group))}
-            for hour, group in range_frame.groupby("local_hour") if len(group) >= 3
-        }
-        result["four_hour_profile"] = {
-            f"{int(block):02d}:00-{(int(block)+4)%24:02d}:00": {"average_range": float(group.range.mean()), "bars": int(len(group))}
-            for block, group in range_frame.groupby("four_hour_block") if len(group) >= 10
-        }
-    return result
-
-
-# ============================================================
-# GHOST THREE-STEP STAIRCASE STRATEGY
-# ============================================================
-
-def identify_candle_one(candle, previous):
-    """Identify a directional first step from rejection, breakout, or close progression."""
-    o = float(candle.open)
-    h = float(candle.high)
-    l = float(candle.low)
-    c = float(candle.close)
-    previous_high = float(previous.high)
-    previous_low = float(previous.low)
-    previous_close = float(previous.close)
-
-    candle_range = max(h - l, 1e-12)
-    upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
-    close_position = (c - l) / candle_range
-
-    # Rejection has priority because it can signal a reversal regardless
-    # of the candle body colour.
-    bullish_rejection = (
-        lower_wick >= max(upper_wick * 1.25, candle_range * 0.25)
-        and close_position >= 0.55
-    )
-    bearish_rejection = (
-        upper_wick >= max(lower_wick * 1.25, candle_range * 0.25)
-        and close_position <= 0.45
-    )
-
-    if bullish_rejection:
-        return "CALL", "SUPPORT REJECTION"
-    if bearish_rejection:
-        return "PUT", "RESISTANCE REJECTION"
-    if c > previous_high:
-        return "CALL", "BULLISH BREAKOUT"
-    if c < previous_low:
-        return "PUT", "BEARISH BREAKOUT"
-    if c > previous_close:
-        return "CALL", "BULLISH DIRECTIONAL STEP"
-    if c < previous_close:
-        return "PUT", "BEARISH DIRECTIONAL STEP"
-    return None, "NO CLEAR FIRST STEP"
-
-
-def assess_candle3_risk(completed, direction, c2, latest_price):
-    """Return soft Candle 3 risk warnings; never overrides hard staircase rules."""
-    warnings = []
-    o = float(c2.open)
-    h = float(c2.high)
-    l = float(c2.low)
-    c = float(c2.close)
-    candle_range = max(h - l, 1e-12)
-    body = abs(c - o)
-    upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
-
-    if body / candle_range <= 0.15:
-        warnings.append(
-            "Candle 2 is an indecision candle (small body relative to its range)."
-        )
-
-    if direction == "CALL":
-        if upper_wick >= max(body * 1.5, candle_range * 0.35):
-            warnings.append(
-                "Candle 2 has a notable upper rejection wick against the bullish move."
-            )
-        prior = completed.iloc[:-2].tail(12)
-        if not prior.empty:
-            resistance = float(prior.high.max())
-            distance = resistance - float(latest_price)
-            if 0 <= distance <= candle_range:
-                warnings.append(
-                    "Price is within one Candle 2 range of a recent high "
-                    f"({fmt_price(resistance)}), which may act as resistance."
-                )
-    else:
-        if lower_wick >= max(body * 1.5, candle_range * 0.35):
-            warnings.append(
-                "Candle 2 has a notable lower rejection wick against the bearish move."
-            )
-        prior = completed.iloc[:-2].tail(12)
-        if not prior.empty:
-            support = float(prior.low.min())
-            distance = float(latest_price) - support
-            if 0 <= distance <= candle_range:
-                warnings.append(
-                    "Price is within one Candle 2 range of a recent low "
-                    f"({fmt_price(support)}), which may act as support."
-                )
-
-    return warnings
-
-
-def analyze_market_structure(completed):
-    """
-    Describe recent price structure for context only.
-    This analysis never creates or invalidates a staircase entry by itself.
-    """
-    if completed is None or len(completed) < 8:
-        return {
-            "label": "BUILDING MARKET HISTORY",
-            "detail": "More completed candles are needed to assess recent structure.",
-            "opposing_pressure": None,
-            "recent_direction": "MIXED",
-            "prior_impulse": "MIXED"
-        }
-
-    data = completed.tail(8).reset_index(drop=True)
-    prior = data.iloc[:5]
-    recent = data.iloc[5:]
-
-    prior_move = float(prior.close.iloc[-1]) - float(prior.open.iloc[0])
-    recent_move = float(recent.close.iloc[-1]) - float(recent.open.iloc[0])
-
-    prior_direction = (
-        "BULLISH" if prior_move > 0
-        else "BEARISH" if prior_move < 0
-        else "MIXED"
-    )
-
-    recent_closes = recent.close.astype(float).tolist()
-    rising_steps = sum(
-        recent_closes[i] > recent_closes[i - 1]
-        for i in range(1, len(recent_closes))
-    )
-    falling_steps = sum(
-        recent_closes[i] < recent_closes[i - 1]
-        for i in range(1, len(recent_closes))
-    )
-
-    recent_direction = (
-        "BULLISH" if rising_steps >= 2
-        else "BEARISH" if falling_steps >= 2
-        else "MIXED"
-    )
-
-    prior_high = float(prior.high.max())
-    prior_low = float(prior.low.min())
-    recent_high = float(recent.high.max())
-    recent_low = float(recent.low.min())
-
-    bearish_structure_break = (
-        recent_direction == "BEARISH" and recent_low < prior_low
-    )
-    bullish_structure_break = (
-        recent_direction == "BULLISH" and recent_high > prior_high
-    )
-
-    opposing_pressure = None
-    if prior_direction == "BULLISH" and recent_direction == "BEARISH":
-        opposing_pressure = "BEARISH"
-        label = (
-            "BULLISH IMPULSE — POSSIBLE BEARISH PULLBACK"
-            if not bearish_structure_break
-            else "BULLISH IMPULSE — BEARISH STRUCTURE BREAK"
-        )
-        detail = (
-            "The earlier candles advanced upward, but the latest candles "
-            "are moving down. A break below the earlier swing-low area "
-            "suggests stronger bearish pressure; without that break, this "
-            "may still be only a pullback."
-        )
-    elif prior_direction == "BEARISH" and recent_direction == "BULLISH":
-        opposing_pressure = "BULLISH"
-        label = (
-            "BEARISH IMPULSE — POSSIBLE BULLISH PULLBACK"
-            if not bullish_structure_break
-            else "BEARISH IMPULSE — BULLISH STRUCTURE BREAK"
-        )
-        detail = (
-            "The earlier candles advanced downward, but the latest candles "
-            "are moving up. A break above the earlier swing-high area "
-            "suggests stronger bullish pressure; without that break, this "
-            "may still be only a pullback."
-        )
-    elif recent_direction == "BULLISH":
-        label = "RECENT BULLISH PRESSURE"
-        detail = "Recent completed closes are generally stepping upward."
-    elif recent_direction == "BEARISH":
-        label = "RECENT BEARISH PRESSURE"
-        detail = "Recent completed closes are generally stepping downward."
-    else:
-        label = "RANGE / MIXED STRUCTURE"
-        detail = "Recent completed candles do not show a clear directional sequence."
-
-    swing_highs, swing_lows = confirmed_pivots(completed.tail(60).reset_index(drop=True), 2)
-    swing_label = "INSUFFICIENT SWINGS"
-    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-        hh = swing_highs[-1][1] > swing_highs[-2][1]
-        hl = swing_lows[-1][1] > swing_lows[-2][1]
-        lh = swing_highs[-1][1] < swing_highs[-2][1]
-        ll = swing_lows[-1][1] < swing_lows[-2][1]
-        swing_label = "HH + HL · UPTREND" if hh and hl else "LH + LL · DOWNTREND" if lh and ll else "MIXED SWING STRUCTURE"
-
-    return {
-        "label": label,
-        "detail": detail,
-        "swing_structure": swing_label,
-        "opposing_pressure": opposing_pressure,
-        "recent_direction": recent_direction,
-        "prior_impulse": prior_direction,
-        "prior_high": prior_high,
-        "prior_low": prior_low,
-        "recent_high": recent_high,
-        "recent_low": recent_low,
-        "structure_break": (
-            bearish_structure_break or bullish_structure_break
-        )
-    }
-
 
 def assess_market_structure_risk(structure, direction):
     """Return a soft warning when recent structure presses against the setup."""
@@ -1817,66 +1130,49 @@ if not st.session_state.get("ghost_cloud_initial_sync_done", False):
 # ============================================================
 
 def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60):
-    """A candidate must survive a full 60-second observation before entry is printed."""
+    """Print a signal only during the first 15 seconds of the candle after its trigger.
+
+    This is a display gate, not an execution engine. Streamlit refresh latency means
+    it cannot guarantee a one-second entry or place an order.
+    """
     result = dict(result or {})
     pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
     key = f"{market}|{instrument}"
-    now = now_cat()
     candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
-    hard_state = result.get("stage") in ("FEED CHECK", "INVALIDATED")
-    if hard_state or candidate is None:
+    if result.get("stage") in ("FEED CHECK", "INVALIDATED") or candidate is None:
         pending_all.pop(key, None)
-        if not hard_state:
-            result["signal"] = "WAIT"
         return result
 
-    candle_key = str(result.get("candle_time", ""))
-    last_issued = st.session_state.get("ghost_last_issued", {})
-    if last_issued.get(key) == (candidate, candle_key):
-        active = st.session_state.get("active_signal")
-        if active and active.get("instrument") == instrument and active.get("direction") == candidate:
-            result.update({"signal": candidate, "stage": "ENTRY READY",
-                           "entry_time": as_cat(active["entry_time"]).to_pydatetime(),
-                           "reason": active.get("reason", result.get("reason", "Signal remains active."))})
-        else:
-            result.update({"signal": "WAIT", "stage": "SCANNING",
-                           "reason": "This candle's candidate has already been evaluated; waiting for a fresh completed candle."})
+    trigger_time = result.get("candle_time")
+    if trigger_time is None:
+        result.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Waiting for the completed trigger-candle timestamp."})
         return result
-
-    pending = pending_all.get(key)
-    if pending is None or pending.get("direction") != candidate:
-        entry_at = now + timedelta(seconds=prep_seconds)
-        pending = {"direction": candidate, "created_at": now.isoformat(),
-                   "entry_at": entry_at.isoformat(), "candle_key": str(result.get("candle_time", "")),
-                   "reason": result.get("reason", "Four-brain candidate detected."),
-                   "supporting_brains": result.get("supporting_brains", [])}
-        pending_all[key] = pending
-        result.update({"signal": "WAIT", "stage": "PREPARE", "candidate_direction": candidate,
-                       "entry_time": entry_at, "reason": "60-second preparation: GHOST has detected a possible " + candidate +
-                       " setup. No entry yet. It is observing whether the four-brain evidence survives. " + pending["reason"]})
-        return result
-
-    entry_at = datetime.fromisoformat(pending["entry_at"])
-    remaining = (entry_at - now).total_seconds()
-    if remaining > 0:
-        result.update({"signal": "WAIT", "stage": "PREPARE", "candidate_direction": candidate,
-                       "entry_time": entry_at, "reason": f"Preparation continues · {max(0,int(remaining))} seconds remaining. " +
-                       "Candidate evidence is being monitored; no trade entry is authorised."})
-        return result
-
-    # At the end of preparation the current scan must still independently support the same direction.
-    pending_all.pop(key, None)
+    trigger_time = pd.Timestamp(trigger_time)
+    if trigger_time.tzinfo is None:
+        trigger_time = trigger_time.tz_localize("UTC")
+    next_open = trigger_time + pd.Timedelta(minutes=1)
+    now_utc = pd.Timestamp.now(tz="UTC")
+    elapsed = (now_utc - next_open).total_seconds()
     last_issued = st.session_state.setdefault("ghost_last_issued", {})
-    candle_key = str(result.get("candle_time", ""))
+    candle_key = str(trigger_time)
     if last_issued.get(key) == (candidate, candle_key):
-        result.update({"signal": "WAIT", "stage": "SCANNING", "reason": "This candle's candidate was already evaluated; waiting for a fresh completed candle."})
+        result.update({"signal":"WAIT", "stage":"SCANNING", "reason":"This trigger candle has already been signalled; waiting for a fresh completed candle."})
         return result
-    last_issued[key] = (candidate, candle_key)
-    result.update({"signal": candidate, "stage": "ENTRY READY", "entry_time": now,
-                   "entry_point": result.get("price"),
-                   "reason": "60-second preparation completed and current four-brain consensus still supports " + candidate + ". " + result.get("reason", "")})
-    return result
+    if elapsed < 0:
+        result.update({"signal":"WAIT", "stage":"WAITING FOR NEXT CANDLE", "candidate_direction":candidate,
+                       "entry_time":as_cat(next_open).to_pydatetime(),
+                       "reason":"Trigger confirmed. Waiting for the next 1-minute candle to open; no mid-candle entry."})
+        return result
+    if elapsed > 15:
+        result.update({"signal":"WAIT", "stage":"MISSED ENTRY WINDOW", "candidate_direction":candidate,
+                       "reason":"The next-candle entry window has passed (more than 15 seconds elapsed). Waiting for a new setup."})
+        return result
 
+    last_issued[key] = (candidate, candle_key)
+    result.update({"signal":candidate, "stage":"ENTRY READY", "entry_time":as_cat(next_open).to_pydatetime(),
+                   "entry_point":result.get("price"),
+                   "reason": "Closed-candle confluence confirmed for the new 1-minute candle. Signal only; no order is placed. " + result.get("reason", "")})
+    return result
 
 def build_signal_record(market, instrument, result, expiry=1):
     created = now_cat()
@@ -2155,7 +1451,7 @@ if run_scan:
                     )
                     profile = learning_profile("FOREX", pair)
                     result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct,
-                                                 learned_weights=profile["multipliers"])
+                                                 learned_weights=profile["multipliers"], structure_candles=aggregate_timeframe(df, 5))
                     result["learning_profile"] = profile
                     record_learning_observation("FOREX", pair, result, candles=df)
                     resolve_learning_observations("FOREX", pair, result.get("price"))
@@ -2249,7 +1545,7 @@ if run_scan:
                 closed_brain_candles = closed_brain_candles[closed_brain_candles.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
                 profile = learning_profile("DERIV", GHOST_NAME)
                 result = four_brain_decision(closed_brain_candles, result,
-                                             learned_weights=profile["multipliers"])
+                                             learned_weights=profile["multipliers"], structure_candles=aggregate_timeframe(closed_brain_candles, 5))
                 result["learning_profile"] = profile
                 record_learning_observation("DERIV", GHOST_NAME, result, candles=closed_brain_candles)
                 resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
