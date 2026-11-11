@@ -1400,7 +1400,9 @@ def train_experience_model(market, instrument, db_path=None, minimum_samples=250
             continue
     n = len(parsed)
     model = {"ready": False, "samples": n, "minimum_samples": minimum_samples,
-             "balanced_accuracy": None, "validation_accuracy": None, "probability_up": None,
+             "training_examples": 0, "validation_examples": 0,
+             "balanced_accuracy": None, "validation_accuracy": None,
+             "majority_baseline": None, "probability_up": None,
              "status": "COLLECTING EXPERIENCE", "feature_names": list(FEATURE_NAMES)}
     if n < minimum_samples:
         model["status"] = f"COLLECTING · {n}/{minimum_samples} resolved examples"
@@ -1438,10 +1440,35 @@ def train_experience_model(market, instrument, db_path=None, minimum_samples=250
     balanced = float(np.mean(recalls))
     majority = max(float(np.mean(y_val == 0)), float(np.mean(y_val == 1)))
     trusted = balanced >= 0.53 and accuracy >= majority + 0.01
-    model.update({"ready": trusted, "samples": n, "validation_accuracy": accuracy,
-                  "balanced_accuracy": balanced, "status": "VALIDATED MODEL" if trusted else "MODEL NOT TRUSTED · rules remain in control",
+    if balanced >= 0.60 and accuracy >= majority + 0.03:
+        reliability = "STRONGER VALIDATION"
+    elif trusted:
+        reliability = "DEVELOPING · PASSES MINIMUM VALIDATION"
+    else:
+        reliability = "WEAK VALIDATION · RULES REMAIN IN CONTROL"
+
+    trained_through_id = int(rows[split-1]["id"])
+    validated_at = datetime.now(TZ).isoformat()
+    with _learning_connect(db_path) as conn:
+        conn.execute("""INSERT OR IGNORE INTO experience_validation_history
+            (market,instrument,trained_through_id,validated_at,samples,training_examples,
+             validation_examples,validation_accuracy,balanced_accuracy,majority_baseline,
+             validation_down,validation_up)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (market, instrument, trained_through_id, validated_at, n, len(y_train), len(y_val),
+             accuracy, balanced, majority, int(np.sum(y_val == 0)), int(np.sum(y_val == 1))))
+        history_rows = conn.execute("""SELECT validated_at,samples,training_examples,
+            validation_examples,validation_accuracy,balanced_accuracy,majority_baseline
+            FROM experience_validation_history WHERE market=? AND instrument=?
+            ORDER BY validated_at DESC LIMIT 20""", (market, instrument)).fetchall()
+    history = [dict(row) for row in reversed(history_rows)]
+    model.update({"ready": trusted, "samples": n, "training_examples": len(y_train),
+                  "validation_examples": len(y_val), "validation_down": int(np.sum(y_val == 0)),
+                  "validation_up": int(np.sum(y_val == 1)), "validation_accuracy": accuracy,
+                  "balanced_accuracy": balanced, "majority_baseline": majority,
+                  "reliability": reliability, "status": "VALIDATED MODEL · " + reliability,
                   "weights": w.tolist(), "mean": mean.tolist(), "scale": scale.tolist(),
-                  "trained_through_id": int(rows[split-1]["id"]), "validation_examples": len(y_val)})
+                  "trained_through_id": trained_through_id, "validation_history": history})
     return model
 
 
@@ -1509,6 +1536,16 @@ def init_learning_db(db_path=None):
         if "features" not in columns:
             conn.execute("ALTER TABLE observations ADD COLUMN features TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_pending ON observations(market,instrument,resolved_at,observed_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS experience_validation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            market TEXT NOT NULL, instrument TEXT NOT NULL,
+            trained_through_id INTEGER NOT NULL, validated_at TEXT NOT NULL,
+            samples INTEGER NOT NULL, training_examples INTEGER NOT NULL,
+            validation_examples INTEGER NOT NULL, validation_accuracy REAL NOT NULL,
+            balanced_accuracy REAL NOT NULL, majority_baseline REAL NOT NULL,
+            validation_down INTEGER NOT NULL, validation_up INTEGER NOT NULL,
+            UNIQUE(market,instrument,trained_through_id)
+        )""")
 
 
 def record_learning_observation(market, instrument, result, db_path=None, observed_at=None, candles=None):
@@ -1688,7 +1725,7 @@ def supabase_cloud_enabled():
 
 
 def sync_learning_cloud(db_path=None, *, upload=True, download=True):
-    """Two-way sync SQLite learning rows with Supabase REST; never deletes either copy."""
+    """Two-way SQLite/Supabase sync; restore and merge cloud rows before uploading."""
     url, key = _supabase_config()
     if not (url and key):
         return {"ok": False, "message": "Supabase credentials are not configured.", "uploaded": 0, "downloaded": 0}
@@ -1698,18 +1735,10 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
     uploaded = downloaded = 0
     try:
         init_learning_db(db_path)
-        if upload:
-            with _learning_connect(db_path) as conn:
-                rows = [dict(r) for r in conn.execute("SELECT * FROM observations ORDER BY id").fetchall()]
-            # PostgREST upsert in batches; the unique constraint protects repeated syncs.
-            for start in range(0, len(rows), 200):
-                batch = rows[start:start + 200]
-                if not batch:
-                    continue
-                response = requests.post(endpoint, params={"on_conflict": "market,instrument,candle_key"},
-                                         headers=headers, json=batch, timeout=25)
-                response.raise_for_status()
-                uploaded += len(batch)
+
+        # IMPORTANT: restore first. A local pending copy can contain NULL outcome/features
+        # while the cloud copy already has the resolved learning result. Downloading first
+        # and merging with COALESCE prevents the subsequent upsert from erasing that result.
         if download:
             read_headers = dict(headers)
             read_headers["Prefer"] = "count=exact"
@@ -1733,6 +1762,21 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
                          row.get("evidence") or "{}", row.get("resolved_at"), row.get("future_price"),
                          row.get("outcome"), row.get("features")))
                     downloaded += 1
+
+        # Upload only after cloud history has been merged into SQLite.
+        # `uploaded` is rows submitted/upserted, not necessarily brand-new cloud rows.
+        if upload:
+            with _learning_connect(db_path) as conn:
+                rows = [dict(r) for r in conn.execute("SELECT * FROM observations ORDER BY id").fetchall()]
+            for start in range(0, len(rows), 200):
+                batch = rows[start:start + 200]
+                if not batch:
+                    continue
+                response = requests.post(endpoint, params={"on_conflict": "market,instrument,candle_key"},
+                                         headers=headers, json=batch, timeout=25)
+                response.raise_for_status()
+                uploaded += len(batch)
+
         return {"ok": True, "message": "Cloud sync successful.", "uploaded": uploaded, "downloaded": downloaded}
     except Exception as exc:
         return {"ok": False, "message": f"Supabase sync failed: {exc}", "uploaded": uploaded, "downloaded": downloaded}
@@ -2260,17 +2304,54 @@ def render_experience_ai(result):
     balanced = model.get("balanced_accuracy")
 
     st.markdown("**EXPERIENCE AI · OUT-OF-SAMPLE VALIDATION**")
-    st.caption(status)
+    reliability = model.get("reliability")
+    if reliability == "STRONGER VALIDATION":
+        st.success(status)
+    elif model.get("ready"):
+        st.info(status)
+    else:
+        st.warning(status)
+
     c1, c2, c3 = st.columns(3)
     c1.metric("RESOLVED EXAMPLES", f"{samples}/{minimum}")
-    c2.metric(
-        "VALIDATION ACCURACY",
-        f"{validation:.1%}" if isinstance(validation, (int, float)) else "—",
-    )
-    c3.metric(
-        "BALANCED ACCURACY",
-        f"{balanced:.1%}" if isinstance(balanced, (int, float)) else "—",
-    )
+    c2.metric("TRAINING EXAMPLES", str(model.get("training_examples", "—")))
+    c3.metric("UNSEEN VALIDATION", str(model.get("validation_examples", "—")))
+    c4, c5, c6 = st.columns(3)
+    c4.metric("VALIDATION ACCURACY", f"{validation:.1%}" if isinstance(validation, (int, float)) else "—")
+    c5.metric("BALANCED ACCURACY", f"{balanced:.1%}" if isinstance(balanced, (int, float)) else "—")
+    baseline = model.get("majority_baseline")
+    c6.metric("MAJORITY-CLASS BASELINE", f"{baseline:.1%}" if isinstance(baseline, (int, float)) else "—")
+
+    history = model.get("validation_history") or []
+    if history:
+        history_frame = pd.DataFrame(history)
+        history_frame["validated_at"] = pd.to_datetime(history_frame["validated_at"], errors="coerce")
+        history_frame = history_frame.dropna(subset=["validated_at"]).set_index("validated_at")
+        if not history_frame.empty:
+            st.caption("VALIDATION HISTORY · last 20 distinct training snapshots")
+            history_chart = go.Figure()
+            for metric_name, label in (("validation_accuracy", "Validation accuracy"),
+                                       ("balanced_accuracy", "Balanced accuracy"),
+                                       ("majority_baseline", "Majority-class baseline")):
+                history_chart.add_trace(go.Scatter(
+                    x=history_frame.index, y=history_frame[metric_name],
+                    mode="lines+markers", name=label
+                ))
+            history_chart.update_layout(
+                height=260, margin=dict(l=10, r=10, t=10, b=10),
+                yaxis=dict(range=[0, 1], tickformat=".0%", title="Accuracy"),
+                xaxis_title="Validation time", legend=dict(orientation="h", y=1.12),
+            )
+            st.plotly_chart(history_chart, use_container_width=True)
+            if len(history_frame) >= 4:
+                recent_balanced = float(history_frame["balanced_accuracy"].iloc[-1])
+                prior_balanced = float(history_frame["balanced_accuracy"].iloc[-4:-1].mean())
+                if recent_balanced < prior_balanced - 0.03:
+                    st.warning("Validation has weakened by more than 3 percentage points versus the previous three checks. Treat the model cautiously.")
+                elif recent_balanced > prior_balanced + 0.03:
+                    st.success("Balanced validation has improved by more than 3 percentage points versus the previous three checks.")
+
+    st.caption("Validation is a historical estimate, not a guarantee. Compare it with the majority-class baseline and account for spreads, execution and changing market conditions.")
 
     if isinstance(probability, (int, float)):
         st.metric("EXPERIENCE AI · ESTIMATED UP PROBABILITY", f"{probability:.1%}")
