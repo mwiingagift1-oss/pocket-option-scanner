@@ -1549,7 +1549,12 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
             (market, instrument, candle_key, stamp_text, price,
              json.dumps(votes), json.dumps(scores), str(result.get("stage", "SCANNING")),
              json.dumps(evidence, default=str), json.dumps(features)))
-        return cur.rowcount > 0
+        inserted = cur.rowcount > 0
+    if inserted and supabase_cloud_enabled():
+        result_sync = sync_learning_cloud(db_path, upload=True, download=False)
+        if not result_sync.get("ok"):
+            st.session_state["ghost_cloud_sync_result"] = result_sync
+    return inserted
 
 
 def resolve_learning_observations(market, instrument, current_price, db_path=None, now=None, horizon_seconds=60):
@@ -1580,6 +1585,10 @@ def resolve_learning_observations(market, instrument, current_price, db_path=Non
             conn.execute("UPDATE observations SET resolved_at=?,future_price=?,outcome=? WHERE id=?",
                          (now_dt.isoformat(), current_price, outcome, row["id"]))
             updated += 1
+    if updated and supabase_cloud_enabled():
+        result_sync = sync_learning_cloud(db_path, upload=True, download=False)
+        if not result_sync.get("ok"):
+            st.session_state["ghost_cloud_sync_result"] = result_sync
     return updated
 
 
@@ -1658,6 +1667,98 @@ def import_learning_csv(file_bytes, db_path=None):
                  row.get("outcome") or None, row.get("features") or None))
             imported += max(0, cur.rowcount)
     return imported
+
+
+# ============================================================
+# SUPABASE CLOUD LEARNING PERSISTENCE
+# ============================================================
+def _supabase_config():
+    try:
+        url = str(st.secrets.get("SUPABASE_URL", "")).strip().rstrip("/")
+        key = str(st.secrets.get("SUPABASE_KEY", "")).strip()
+    except Exception:
+        url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+        key = os.getenv("SUPABASE_KEY", "").strip()
+    return url, key
+
+
+def supabase_cloud_enabled():
+    url, key = _supabase_config()
+    return bool(url and key)
+
+
+def sync_learning_cloud(db_path=None, *, upload=True, download=True):
+    """Two-way sync SQLite learning rows with Supabase REST; never deletes either copy."""
+    url, key = _supabase_config()
+    if not (url and key):
+        return {"ok": False, "message": "Supabase credentials are not configured.", "uploaded": 0, "downloaded": 0}
+    headers = {"apikey": key, "Authorization": f"Bearer {key}",
+               "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"}
+    endpoint = f"{url}/rest/v1/observations"
+    uploaded = downloaded = 0
+    try:
+        init_learning_db(db_path)
+        if upload:
+            with _learning_connect(db_path) as conn:
+                rows = [dict(r) for r in conn.execute("SELECT * FROM observations ORDER BY id").fetchall()]
+            # PostgREST upsert in batches; the unique constraint protects repeated syncs.
+            for start in range(0, len(rows), 200):
+                batch = rows[start:start + 200]
+                if not batch:
+                    continue
+                response = requests.post(endpoint, params={"on_conflict": "market,instrument,candle_key"},
+                                         headers=headers, json=batch, timeout=25)
+                response.raise_for_status()
+                uploaded += len(batch)
+        if download:
+            read_headers = dict(headers)
+            read_headers["Prefer"] = "count=exact"
+            response = requests.get(endpoint, params={"select": "*", "order": "id.asc", "limit": 1000},
+                                    headers=read_headers, timeout=25)
+            response.raise_for_status()
+            remote_rows = response.json()
+            with _learning_connect(db_path) as conn:
+                for row in remote_rows:
+                    conn.execute("""INSERT INTO observations
+                        (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome,features)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT(market,instrument,candle_key) DO UPDATE SET
+                        resolved_at=COALESCE(excluded.resolved_at, observations.resolved_at),
+                        future_price=COALESCE(excluded.future_price, observations.future_price),
+                        outcome=COALESCE(excluded.outcome, observations.outcome),
+                        features=COALESCE(excluded.features, observations.features)""",
+                        (row.get("market"), row.get("instrument"), row.get("candle_key"),
+                         row.get("observed_at"), row.get("reference_price"), row.get("brain_votes") or "{}",
+                         row.get("brain_scores") or "{}", row.get("state") or "SCANNING",
+                         row.get("evidence") or "{}", row.get("resolved_at"), row.get("future_price"),
+                         row.get("outcome"), row.get("features")))
+                    downloaded += 1
+        return {"ok": True, "message": "Cloud sync successful.", "uploaded": uploaded, "downloaded": downloaded}
+    except Exception as exc:
+        return {"ok": False, "message": f"Supabase sync failed: {exc}", "uploaded": uploaded, "downloaded": downloaded}
+
+
+def cloud_learning_count():
+    url, key = _supabase_config()
+    if not (url and key):
+        return None
+    try:
+        response = requests.get(f"{url}/rest/v1/observations",
+                                params={"select": "id", "limit": 1},
+                                headers={"apikey": key, "Authorization": f"Bearer {key}",
+                                         "Prefer": "count=exact"}, timeout=15)
+        response.raise_for_status()
+        content_range = response.headers.get("Content-Range", "")
+        return int(content_range.rsplit("/", 1)[-1]) if "/" in content_range else None
+    except Exception:
+        return None
+
+
+# Restore cloud history at the start of each Streamlit session, then upload any local-only rows.
+if not st.session_state.get("ghost_cloud_initial_sync_done", False):
+    _cloud_sync_result = sync_learning_cloud(upload=True, download=True)
+    st.session_state["ghost_cloud_initial_sync_done"] = True
+    st.session_state["ghost_cloud_sync_result"] = _cloud_sync_result
 
 
 # ============================================================
@@ -2279,6 +2380,13 @@ with right:
             st.caption("A WAIT vote is meaningful: that brain has not found sufficient directional evidence.")
     with tabs[2]:
         st.markdown("**EXPERIENCE & SELF-CALIBRATION**")
+        _cloud_status = st.session_state.get("ghost_cloud_sync_result", {})
+        if _cloud_status.get("ok"):
+            st.success(f"CLOUD STORAGE SYNCED · Uploaded {_cloud_status.get('uploaded', 0)} · Retrieved {_cloud_status.get('downloaded', 0)}")
+        elif supabase_cloud_enabled():
+            st.warning(f"CLOUD STORAGE NOT VERIFIED · {_cloud_status.get('message', 'Sync has not succeeded yet.')}")
+        else:
+            st.warning("CLOUD STORAGE NOT CONFIGURED · Learning is currently stored locally only.")
         if result:
             render_learning(result.get("learning_profile",{}))
             render_experience_ai(result)
@@ -2292,7 +2400,11 @@ with right:
         if learning_backup is not None:
             try:
                 restored = import_learning_csv(learning_backup.getvalue())
-                st.success(f"Restored {restored} new observations.")
+                cloud_result = sync_learning_cloud(upload=True, download=True)
+                if cloud_result.get("ok"):
+                    st.success(f"Restored {restored} new observations; cloud sync uploaded {cloud_result.get('uploaded', 0)} rows and retrieved {cloud_result.get('downloaded', 0)} rows.")
+                else:
+                    st.error(f"Local restore completed, but cloud sync failed: {cloud_result.get('message')}")
             except Exception as exc:
                 st.error(f"Restore failed: {exc}")
     with tabs[3]:
