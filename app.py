@@ -2141,6 +2141,46 @@ if active_signal:
 
 left, right = st.columns([0.94, 1.06], gap="small")
 
+
+
+def render_experience_ai(result):
+    """Render the validated experience model status without affecting signal generation."""
+    result = result or {}
+    model = result.get("experience_ai") or {}
+    if not model:
+        st.caption("Experience AI: collecting observations; no validated model is active yet.")
+        return
+
+    status = str(model.get("status", "COLLECTING EXPERIENCE"))
+    samples = int(model.get("samples", 0) or 0)
+    minimum = int(model.get("minimum_samples", 250) or 250)
+    probability = model.get("probability_up")
+    validation = model.get("validation_accuracy")
+    balanced = model.get("balanced_accuracy")
+
+    st.markdown("**EXPERIENCE AI · OUT-OF-SAMPLE VALIDATION**")
+    st.caption(status)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("RESOLVED EXAMPLES", f"{samples}/{minimum}")
+    c2.metric(
+        "VALIDATION ACCURACY",
+        f"{validation:.1%}" if isinstance(validation, (int, float)) else "—",
+    )
+    c3.metric(
+        "BALANCED ACCURACY",
+        f"{balanced:.1%}" if isinstance(balanced, (int, float)) else "—",
+    )
+
+    if isinstance(probability, (int, float)):
+        st.metric("EXPERIENCE AI · ESTIMATED UP PROBABILITY", f"{probability:.1%}")
+        st.caption(
+            "This probability is a secondary filter from the validated historical model; "
+            "it is not a standalone trade signal."
+        )
+    elif not model.get("ready", False):
+        st.caption("The four-brain rules remain in control until the experience model passes validation.")
+
+
 def render_learning(profile):
     profile = profile or {"stats": {}, "resolved_observations": 0}
     stats = profile.get("stats", {})
