@@ -393,7 +393,14 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3, pull
     top = "CALL" if scores["CALL"] > scores["PUT"] else "PUT" if scores["PUT"] > scores["CALL"] else "WAIT"
     min_score = 4.0
     min_systems = 2
-    direction = top if scores[top] >= min_score and len(supporters[top]) >= min_systems and lead >= 2.5 else "WAIT"
+    direction = (
+        top
+        if top in supporters
+        and scores[top] >= min_score
+        and len(supporters[top]) >= min_systems
+        and lead >= 2.5
+        else "WAIT"
+    )
 
     # Feed/sequence invalidation remains a hard safety stop. A disagreement is
     # not silently resolved: it is shown as CONFLICT / WAIT with its causes.
@@ -2342,7 +2349,11 @@ def render_experience_ai(result):
                 yaxis=dict(range=[0, 1], tickformat=".0%", title="Accuracy"),
                 xaxis_title="Validation time", legend=dict(orientation="h", y=1.12),
             )
-            st.plotly_chart(history_chart, use_container_width=True)
+            st.plotly_chart(
+                history_chart,
+                use_container_width=True,
+                key="experience_validation_history_chart",
+            )
             if len(history_frame) >= 4:
                 recent_balanced = float(history_frame["balanced_accuracy"].iloc[-1])
                 prior_balanced = float(history_frame["balanced_accuracy"].iloc[-4:-1].mean())
@@ -2451,7 +2462,9 @@ with right:
             st.caption(result.get("reason","Waiting for confluence."))
             fusion=result.get("fusion",{})
             st.info(f"{fusion.get('state','COLLECTING')} · CALL {fusion.get('scores',{}).get('CALL',0):.1f} / PUT {fusion.get('scores',{}).get('PUT',0):.1f}")
-            render_experience_ai(result)
+            probability = (result.get("experience_ai") or {}).get("probability_up")
+            if isinstance(probability, (int, float)):
+                st.caption(f"Experience AI secondary filter · estimated UP probability {probability:.1%} · details in GHOST LEARNING.")
         else:
             st.markdown('<div class="brain-card"><div class="brain-state">WAITING FOR MARKET DATA</div><div class="brain-detail">No active signal or countdown is shown.</div></div>',unsafe_allow_html=True)
     with tabs[1]:
