@@ -2047,7 +2047,7 @@ with st.sidebar:
         st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "Deriv uses a persistent live tick subscription with analysis refresh every 2 seconds. "
+        "Deriv keeps a persistent live tick subscription; the dashboard refreshes every 5 seconds. "
         "Forex scans once per minute."
     )
     st.divider()
@@ -2095,8 +2095,11 @@ with st.sidebar:
 if st.session_state.pop("stop_stream_requested", False):
     auto_scan = False
 
+# A slightly slower UI refresh reduces visible redraw/flicker while keeping
+# the persistent Deriv tick subscription running between dashboard updates.
+# The analysis scheduler below remains unchanged.
 if auto_refresh:
-    st_autorefresh(interval=2000, key="desk_clock")
+    st_autorefresh(interval=5000, key="desk_clock")
 
 now = now_cat()
 st.caption(
