@@ -37,7 +37,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.5 Live Feed Repair",
+    page_title="GHOST Protocol 4.6 Adaptive Zone Intelligence",
     page_icon="📡",
     layout="wide"
 )
@@ -60,7 +60,7 @@ html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:auto;
 .ghost-title{color:#fff;font-size:23px;font-weight:950;letter-spacing:.02em;margin:1px 0}
 .ghost-sub{color:#fff0f7;font-size:12px}
 .signal-card{padding:6px 9px;border-radius:14px;background:linear-gradient(145deg,#32194c,#21142f);border:1px solid #7546a0;margin:4px 0 10px}
-.signal-call{border-left:6px solid #ffffff}.signal-put{border-left:6px solid #ff334f}.signal-wait{border-left:6px solid #9a5bc8}
+.signal-call{border-left:6px solid #2878ff}.signal-put{border-left:6px solid #ff334f}.signal-wait{border-left:6px solid #9a5bc8}
 .brain-card{background:linear-gradient(145deg,#29143d,#381b43);border:1px solid #7546a0;border-radius:9px;padding:5px 7px;margin:2px 0}
 .brain-name{color:#edcfff;font-size:10px;font-weight:900;letter-spacing:1.2px}
 .brain-state{color:#fff;font-size:12px;font-weight:850;margin:3px 0}
@@ -83,6 +83,33 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 [data-testid="stMetric"]{padding:5px 7px!important;min-height:62px!important}
 [data-testid="stMetricValue"]{font-size:1.15rem!important}
 [data-testid="stVerticalBlock"]{gap:.35rem!important}
+/* High-contrast controls: readable on Android, desktop and both app themes. */
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] p,
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
+[data-testid="stCaptionContainer"], label, label p,
+[data-testid="stRadio"] p, [data-testid="stCheckbox"] p,
+[data-testid="stSelectbox"] label, [data-testid="stMultiSelect"] label,
+[data-testid="stSlider"] label, [data-testid="stTextInput"] label,
+[data-testid="stNumberInput"] label {color:#f4f6ff!important}
+[data-testid="stSidebar"]{background:#111a32!important}
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p,
+[data-testid="stSidebar"] [data-testid="stRadio"] label,
+[data-testid="stSidebar"] [data-testid="stRadio"] p,
+[data-testid="stSidebar"] label p {color:#ffffff!important;font-weight:750!important}
+[data-baseweb="select"]>div,[data-baseweb="input"]>div,
+[data-baseweb="textarea"]>div{background:#17213d!important;border-color:#52649a!important;color:#ffffff!important}
+[data-baseweb="select"] input,[data-baseweb="input"] input,
+[data-baseweb="textarea"] textarea{color:#ffffff!important}
+[data-baseweb="popover"]{background:#17213d!important;color:#ffffff!important}
+[role="listbox"], [role="option"], [data-baseweb="menu"]{background:#17213d!important;color:#ffffff!important}
+[role="option"] *{color:#ffffff!important}
+[data-testid="stSelectbox"] div, [data-testid="stRadio"] div{color:#ffffff}
+[data-testid="stRadio"] [role="radiogroup"] label{background:#182342;border:1px solid #465b91;border-radius:9px;padding:7px 9px;margin:2px}
+[data-testid="stRadio"] [role="radiogroup"] label p{color:#ffffff!important}
+.stApp, .stApp p, .stApp span, .stApp label, .stApp li{color:#f3f5ff}
+.ghost-zone-status{border:1px solid #4764a8;background:linear-gradient(100deg,#1b2344,#2b1740);border-radius:11px;padding:9px 12px;color:#fff;margin:5px 0}
+.signal-prepared{border-left:6px solid #4d8dff}
+
 @media(max-width:1100px){
   .block-container{padding:.45rem .55rem .8rem}
   .ghost-title{font-size:21px}
@@ -98,7 +125,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">FOUR INTELLIGENCES · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.5</div><div class="ghost-sub">LIVE SIGNALS · CANDLE CHART · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.6</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -143,7 +170,7 @@ def get_secret_api_key():
 
 
 # ============================================================
-# FOREX ENGINE — THREE STEPS
+# FOREX ENGINE — ZONE-BASED SIGNALS
 # ============================================================
 
 def fetch_forex(symbol, key, count):
@@ -298,125 +325,239 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
 
 
 # ============================================================
-# FOUR-BRAIN SIGNAL FUSION — ALL FOUR SYSTEMS VOTE
+# ZONE REACTION INTELLIGENCE — ONE DECISION
 # ============================================================
+def zone_reaction_analysis(candles, live_price=None, structure_candles=None, higher_candles=None, forming_candle=None):
+    """Find nearby support/resistance zones and score the market's reaction.
+
+    Uses completed OHLC candles plus the latest live price. Zone reactions are
+    primary; named candle patterns and the old staircase are contextual evidence.
+    """
+    empty = {"support": None, "resistance": None, "support_zone": None,
+             "resistance_zone": None, "candidate": "WAIT", "candidate_score": 0.0,
+             "support_score": 0.0, "resistance_score": 0.0,
+             "state": "COLLECTING", "reason": "Collecting completed candles."}
+    if candles is None or len(candles) < 25:
+        return empty
+    d = candles.copy().reset_index(drop=True)
+    for col in ("open", "high", "low", "close"):
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna(subset=["open", "high", "low", "close"])
+    if len(d) < 25:
+        return empty
+    price = float(live_price) if live_price is not None and pd.notna(live_price) else float(d.close.iloc[-1])
+    ranges = (d.high.astype(float) - d.low.astype(float)).tail(30)
+    atr = float(ranges.median()) if len(ranges) else 0.0
+    atr = max(atr, abs(price) * 0.00002, 1e-9)
+    tolerance = max(atr * 0.32, abs(price) * 0.000025, 1e-9)
+
+    # Pool pivot levels from 1m, completed 5m and completed 10m structure.
+    low_levels, high_levels = [], []
+    sources = [(d, 2), (structure_candles, 2), (higher_candles, 1)]
+    for frame, strength in sources:
+        if frame is None or len(frame) < max(12, strength * 2 + 5):
+            continue
+        frame = frame.copy().reset_index(drop=True)
+        try:
+            ph, pl = confirmed_pivots(frame, strength)
+            low_levels.extend(float(v) for _, v in pl)
+            high_levels.extend(float(v) for _, v in ph)
+        except Exception:
+            continue
+    recent_lows = [v for v in low_levels if v <= price + tolerance]
+    recent_highs = [v for v in high_levels if v >= price - tolerance]
+    # Role-reversal candidates: recently broken levels can now act as the
+    # opposite zone when price has moved through them.
+    broken_resistance = [v for v in high_levels if v < price and price-v <= atr*2.0]
+    broken_support = [v for v in low_levels if v > price and v-price <= atr*2.0]
+    support_candidates = recent_lows + broken_resistance
+    resistance_candidates = recent_highs + broken_support
+    support = max(support_candidates) if support_candidates else float(d.low.tail(25).min())
+    resistance = min(resistance_candidates) if resistance_candidates else float(d.high.tail(25).max())
+
+    recent = d.tail(8).reset_index(drop=True)
+    if forming_candle is not None:
+        live_bar = pd.Series(forming_candle)
+        prev = recent.iloc[-1]
+        last = live_bar
+        reaction_rows = pd.concat([recent, pd.DataFrame([live_bar])], ignore_index=True)
+    else:
+        last = recent.iloc[-1]
+        prev = recent.iloc[-2]
+        reaction_rows = recent
+    o, h, l, c = map(float, (last.open, last.high, last.low, last.close))
+    body = abs(c-o)
+    span = max(h-l, 1e-12)
+    lower_wick = min(o,c)-l
+    upper_wick = h-max(o,c)
+    close_location = (c-l)/span
+    bullish = c > o
+    bearish = c < o
+    bull_rejection = lower_wick >= max(body*0.55, span*0.18) and close_location >= 0.56
+    bear_rejection = upper_wick >= max(body*0.55, span*0.18) and close_location <= 0.44
+    bull_engulf = (float(prev.close) < float(prev.open) and bullish and o <= float(prev.close) and c >= float(prev.open))
+    bear_engulf = (float(prev.close) > float(prev.open) and bearish and o >= float(prev.close) and c <= float(prev.open))
+
+    support_dist = abs(price-support)/atr
+    resistance_dist = abs(resistance-price)/atr
+    support_near = support_dist <= 1.35
+    resistance_near = resistance_dist <= 1.35
+    support_touches = int((d.low.tail(100).astype(float).sub(support).abs() <= tolerance*1.8).sum())
+    resistance_touches = int((d.high.tail(100).astype(float).sub(resistance).abs() <= tolerance*1.8).sum())
+    recent_support_touch = bool((reaction_rows.low.tail(4).astype(float).sub(support).abs() <= tolerance*2.5).any())
+    recent_resistance_touch = bool((reaction_rows.high.tail(4).astype(float).sub(resistance).abs() <= tolerance*2.5).any())
+    support_reaction = recent_support_touch and support_dist <= 2.5 and (bull_rejection or bull_engulf or (bullish and close_location >= 0.60))
+    resistance_reaction = recent_resistance_touch and resistance_dist <= 2.5 and (bear_rejection or bear_engulf or (bearish and close_location <= 0.40))
+
+    # Zone scores are cumulative evidence, not rigid candle-pattern gates.
+    s_score = 0.0
+    r_score = 0.0
+    if support_near: s_score += max(0.35, 1.35 - support_dist*0.65)
+    if resistance_near: r_score += max(0.35, 1.35 - resistance_dist*0.65)
+    if bull_rejection: s_score += 0.85
+    if bear_rejection: r_score += 0.85
+    if support_reaction: s_score += 0.85
+    if resistance_reaction: r_score += 0.85
+    if bull_engulf: s_score += 0.90
+    if bear_engulf: r_score += 0.90
+    if bullish: s_score += 0.45
+    if bearish: r_score += 0.45
+    if close_location >= 0.68: s_score += 0.35
+    if close_location <= 0.32: r_score += 0.35
+    if float(last.close) > float(prev.close): s_score += 0.25
+    if float(last.close) < float(prev.close): r_score += 0.25
+    s_score += min(support_touches, 3)*0.12
+    r_score += min(resistance_touches, 3)*0.12
+
+    # A decisive close beyond a zone, or a successful role-reversal retest,
+    # can be an opportunity even when the old rejection logic is irrelevant.
+    last_close = float(last.close)
+    prev_close = float(prev.close)
+    up_break_level = max(broken_resistance) if broken_resistance else None
+    down_break_level = min(broken_support) if broken_support else None
+    breakout_up = (up_break_level is not None and last_close > up_break_level + atr*0.12 and prev_close <= up_break_level + atr*0.12)
+    breakout_down = (down_break_level is not None and last_close < down_break_level - atr*0.12 and prev_close >= down_break_level - atr*0.12)
+    retest_up = (up_break_level is not None and any(abs(float(x)-up_break_level) <= tolerance*2 for x in reaction_rows.low.tail(4)) and last_close > up_break_level)
+    retest_down = (down_break_level is not None and any(abs(float(x)-down_break_level) <= tolerance*2 for x in reaction_rows.high.tail(4)) and last_close < down_break_level)
+    if breakout_up: s_score += 1.15
+    if breakout_down: r_score += 1.15
+    if retest_up: s_score += 0.85
+    if retest_down: r_score += 0.85
+
+    # Avoid inventing a zone signal in the middle of an unstructured range.
+    support_event = support_near or support_reaction or breakout_up or retest_up
+    resistance_event = resistance_near or resistance_reaction or breakout_down or retest_down
+    candidate, score, state = "WAIT", 0.0, "BETWEEN ZONES"
+    if support_event and s_score >= 2.05 and s_score >= r_score + 0.25:
+        candidate, score = "CALL", s_score
+        state = "SUPPORT REACTION" if (support_near or support_reaction) else "RESISTANCE BREAK / SUPPORT RETEST"
+    elif resistance_event and r_score >= 2.05 and r_score >= s_score + 0.25:
+        candidate, score = "PUT", r_score
+        state = "RESISTANCE REACTION" if (resistance_near or resistance_reaction) else "SUPPORT BREAK / RESISTANCE RETEST"
+    elif support_near and resistance_near:
+        state = "BETWEEN / OVERLAPPING ZONES"
+    elif support_near:
+        state = "SUPPORT TEST · REACTION NOT PROVEN"
+    elif resistance_near:
+        state = "RESISTANCE TEST · REACTION NOT PROVEN"
+
+    # Build readable zone bands for the chart; zone width adapts to local range.
+    half = max(tolerance, atr*0.22)
+    support_zone = {"low": support-half, "high": support+half, "center": support,
+                    "touches": support_touches, "distance_atr": round(support_dist, 2)}
+    resistance_zone = {"low": resistance-half, "high": resistance+half, "center": resistance,
+                       "touches": resistance_touches, "distance_atr": round(resistance_dist, 2)}
+    reason = (f"{state}; support evidence {s_score:.2f}, resistance evidence {r_score:.2f}; "
+              f"support distance {support_dist:.2f} ATR, resistance distance {resistance_dist:.2f} ATR.")
+    return {"support": support, "resistance": resistance,
+            "support_zone": support_zone, "resistance_zone": resistance_zone,
+            "candidate": candidate, "candidate_score": score,
+            "support_score": s_score, "resistance_score": r_score,
+            "support_touches": support_touches, "resistance_touches": resistance_touches,
+            "support_near": support_near, "resistance_near": resistance_near,
+            "recent_support_touch": recent_support_touch, "recent_resistance_touch": recent_resistance_touch,
+            "support_reaction": support_reaction, "resistance_reaction": resistance_reaction,
+            "breakout_up": breakout_up, "breakout_down": breakout_down,
+            "retest_up": retest_up, "retest_down": retest_down,
+            "bull_rejection": bull_rejection, "bear_rejection": bear_rejection,
+            "bull_engulfing": bull_engulf, "bear_engulfing": bear_engulf,
+            "atr": atr, "state": state, "reason": reason, "price": price}
+
+
 def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                         pullback_pct=50, learned_weights=None,
-                        structure_candles=None):
-    """Strict four-brain fusion. The staircase remains the directional authority."""
+                        structure_candles=None, forming_candle=None):
+    """Unified zone-first decision. Candle formations are supporting evidence, never vetoes."""
     base = dict(staircase_result or {})
-    # The four brains evaluate every snapshot for context and learning. The
-    # native C1/C2/C3 staircase remains the only entry authority.
-    native_stage = base.get("stage")
-    native_signal = base.get("signal", "WAIT")
-    empty = {"signal": "WAIT", "stage": "SCANNING", "brains": {},
-             "fusion": {"state": "COLLECTING"}, "brain_scores": {"CALL": 0, "PUT": 0}}
+    if base.get("stage") == "FEED CHECK":
+        base.update({"signal": "WAIT", "candidate_direction": "WAIT", "reason": base.get("reason", "Live feed needs attention."),
+                     "brains": {}, "fusion": {"state": "FEED CHECK"}})
+        return base
     if candles is None or len(candles) < 30:
-        base.update(empty)
-        base["reason"] = "Collecting completed 1-minute candles for the four intelligence systems."
+        base.update({"signal": "WAIT", "stage": "COLLECTING DATA", "reason": "Collecting completed candles for zone analysis.",
+                     "brains": {}, "fusion": {"state": "COLLECTING"}})
         return base
     d = candles.copy().reset_index(drop=True)
     structure = structure_candles.copy().reset_index(drop=True) if structure_candles is not None else aggregate_timeframe(d, 5)
-    if structure is None or len(structure) < 20:
-        base.update(empty)
-        base["reason"] = "Waiting for enough completed 5-minute structure candles."
-        return base
-
-    # A: Three-Stairs — direction comes only from confirmed swing-price structure.
-    highs, lows = confirmed_pivots(structure, strength)
-    hs, ls = highs[-3:], lows[-3:]
-    bull_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] > hs[i-1][1] for i in (1, 2)) and all(ls[i][1] > ls[i-1][1] for i in (1, 2))
-    bear_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] < hs[i-1][1] for i in (1, 2)) and all(ls[i][1] < ls[i-1][1] for i in (1, 2))
-    direction_a = "CALL" if bull_a else "PUT" if bear_a else "WAIT"
-    score_a = 2 if direction_a != "WAIT" else 0
-
-    # B: Location. A single touch is weak and cannot authorize an entry.
-    sr = support_resistance_analysis(structure, lookback=120)
-    last = d.iloc[-1]
-    price = float(base.get("price", last.close))
-    native_candle_time = base.get("candle_time", last.datetime)
-    ranges = (structure.high.astype(float) - structure.low.astype(float)).tail(20)
-    tolerance = max(float(ranges.median()) * 0.18, abs(price) * 0.00015, 1e-12)
-    sup, res = sr.get("support"), sr.get("resistance")
-    support_touches = sum(abs(float(v)-float(sup)) <= tolerance for _, v in lows[-30:]) if sup is not None else 0
-    resistance_touches = sum(abs(float(v)-float(res)) <= tolerance for _, v in highs[-30:]) if res is not None else 0
-    at_support = sup is not None and abs(price-float(sup)) <= tolerance * 1.8
-    at_resistance = res is not None and abs(price-float(res)) <= tolerance * 1.8
-    level_direction = "CALL" if at_support and not at_resistance else "PUT" if at_resistance and not at_support else "WAIT"
-    touches = support_touches if level_direction == "CALL" else resistance_touches if level_direction == "PUT" else 0
-    level_score = 2 if level_direction != "WAIT" and touches >= 3 else 1 if level_direction != "WAIT" and touches >= 2 else 0
-    if level_score == 0:
-        level_direction = "WAIT"
-
-    # C: Candle Bible — only the latest completed candle; body must exceed 50%.
+    higher = aggregate_timeframe(d, 10)
+    live_price = base.get("price", d.close.iloc[-1])
+    zones = zone_reaction_analysis(d, live_price, structure, higher, forming_candle=forming_candle)
+    sr = {"support": zones.get("support"), "resistance": zones.get("resistance"),
+          "support_zone": zones.get("support_zone"), "resistance_zone": zones.get("resistance_zone"),
+          "note": "Adaptive 1m/5m/10m pivot zones; role reversals and reaction context included."}
     bible = candle_bible_analysis(d)
     patterns = [str(x).upper() for x in bible.get("patterns", [])]
-    bull_terms = ("BULLISH ENGULFING", "HAMMER", "PIERCING LINE", "MORNING STAR", "BULLISH MARUBOZU", "THREE WHITE SOLDIERS")
-    bear_terms = ("BEARISH ENGULFING", "SHOOTING-STAR", "DARK CLOUD", "EVENING STAR", "BEARISH MARUBOZU", "THREE BLACK CROWS")
-    bull_c = any(any(t in x for t in bull_terms) for x in patterns)
-    bear_c = any(any(t in x for t in bear_terms) for x in patterns)
-    body = abs(float(last.close)-float(last.open))
-    span = max(float(last.high)-float(last.low), 1e-12)
-    body_ratio = body/span
-    candle_dir = "CALL" if bull_c and not bear_c and float(last.close)>float(last.open) else "PUT" if bear_c and not bull_c and float(last.close)<float(last.open) else "WAIT"
-    trigger_direction = candle_dir if level_direction == candle_dir and body_ratio > 0.50 else "WAIT"
-    trigger_score = 2 if trigger_direction != "WAIT" else 0
-
-    # D: Homma/Sakata is confirmation only. A directional contradiction is a veto.
     sakata = homma_sakata_analysis(d)
     observations = [str(x).upper() for x in sakata.get("observations", [])]
-    d_bull = any("THREE METHODS BULLISH" in x or ("THREE PARALLEL LINES" in x and "BULLISH" in x) for x in observations)
-    d_bear = any("THREE METHODS BEARISH" in x or ("THREE PARALLEL LINES" in x and "BEARISH" in x) for x in observations)
-    homma_direction = "CALL" if d_bull and not d_bear else "PUT" if d_bear and not d_bull else "WAIT"
-    disagreement = homma_direction in ("CALL", "PUT") and trigger_direction in ("CALL", "PUT") and homma_direction != trigger_direction
-    conf_score = 1 if homma_direction == trigger_direction and trigger_direction != "WAIT" else -1 if disagreement else 0
-
-    # Apply learned multipliers to each module score (bounded to avoid runaway fitting).
-    names = {"A": "THREE STEPS", "B": "SUPPORT / RESISTANCE", "C": "CANDLE BIBLE", "D": "HOMMA / SAKATA"}
-    raw = {"A": score_a, "B": level_score, "C": trigger_score, "D": conf_score}
-    weights = {}
+    stairs = base.get("signal", "WAIT")
+    if stairs not in ("CALL", "PUT"):
+        stairs = "WAIT"
+    zone_direction = zones.get("candidate", "WAIT")
+    candle_direction = "CALL" if zones.get("bull_rejection") or zones.get("bull_engulfing") else "PUT" if zones.get("bear_rejection") or zones.get("bear_engulfing") else "WAIT"
+    regime = detect_market_regime(d)
+    candidate = zone_direction
     learned_weights = learned_weights or {}
-    weighted = {}
-    for key, name in names.items():
-        try:
-            mult = float(learned_weights.get(name, 1.0))
-        except (TypeError, ValueError):
-            mult = 1.0
-        weights[key] = max(0.85, min(1.15, mult))
-        weighted[key] = raw[key] * weights[key]
-    total = sum(weighted.values())
-    aligned = direction_a == trigger_direction and direction_a != "WAIT"
-    hard_reasons = []
-    if direction_a == "WAIT": hard_reasons.append("Three-Stairs structure is neutral")
-    if level_direction == "WAIT": hard_reasons.append("price is not at a sufficiently tested support/resistance level")
-    if trigger_direction == "WAIT": hard_reasons.append("no qualifying closed 1-minute trigger candle at the level")
-    if disagreement: hard_reasons.append("Homma/Sakata confirmation directly disagrees")
-    if not aligned: hard_reasons.append("staircase direction and trigger direction do not align")
-    if total < 5.0: hard_reasons.append("weighted confluence score is below 5")
-    if native_stage != "ENTRY READY": hard_reasons.append(f"Three-Step gate is {native_stage or 'not ready'}")
-    if native_signal not in ("CALL", "PUT") or native_signal != trigger_direction:
-        hard_reasons.append("native C1/C2/C3 direction is not confirmed for this brain vote")
-    tier = 1.0 if total >= 6.5 and trigger_score == 2 and conf_score == 1 else 0.75 if total >= 6.0 else 0.50 if total >= 5.0 and trigger_score == 2 else 0.0
-    approved = not hard_reasons and tier > 0
-    signal = trigger_direction if approved else "WAIT"
-    brains = {
-        "THREE STEPS": {"vote": direction_a, "score": score_a, "weight": weights["A"], "role": "Direction · 5m confirmed HH/HL or LH/LL", "detail": "5m confirmed higher highs/higher lows or lower highs/lower lows"},
-        "SUPPORT / RESISTANCE": {"vote": level_direction, "score": level_score, "weight": weights["B"], "role": "Location · tested level", "detail": f"Support touches {support_touches}; resistance touches {resistance_touches}"},
-        "CANDLE BIBLE": {"vote": trigger_direction, "score": trigger_score, "weight": weights["C"], "role": "Timing · completed 1m trigger", "detail": f"Closed 1m body {body_ratio:.0%}; {', '.join(patterns)}"},
-        "HOMMA / SAKATA": {"vote": homma_direction, "score": conf_score, "weight": weights["D"], "role": "Confirmation · not an entry trigger", "detail": '; '.join(observations) if observations else "No validated directional formation"},
+    def _weight(name):
+        try: return max(0.85, min(1.15, float(learned_weights.get(name, 1.0))))
+        except (TypeError, ValueError): return 1.0
+    zone_weight = _weight("ZONE REACTION")
+    structure_weight = _weight("MARKET STRUCTURE")
+    candle_weight = _weight("CANDLE BEHAVIOUR")
+    regime_weight = _weight("MARKET REGIME")
+    score = float(zones.get("candidate_score", 0.0)) * zone_weight
+    # Staircase, candle and regime contribute weighted evidence; none can veto a valid zone reaction.
+    if candidate == "CALL" and stairs == "CALL": score += 0.25 * structure_weight
+    if candidate == "PUT" and stairs == "PUT": score += 0.25 * structure_weight
+    if candidate == "CALL" and candle_direction == "CALL": score += 0.20 * candle_weight
+    if candidate == "PUT" and candle_direction == "PUT": score += 0.20 * candle_weight
+    if candidate == "CALL" and regime.get("tag") == "TrendingBull": score += 0.15 * regime_weight
+    if candidate == "PUT" and regime.get("tag") == "TrendingBear": score += 0.15 * regime_weight
+    # A strong opposite candle is a warning, not an automatic veto.
+    opposing_warning = (candidate == "CALL" and zones.get("bear_engulfing")) or (candidate == "PUT" and zones.get("bull_engulfing"))
+    if opposing_warning: score -= 0.45
+    approved = candidate in ("CALL", "PUT") and score >= 2.05
+    signal = candidate if approved else "WAIT"
+    votes = {
+        "ZONE REACTION": {"vote": zone_direction, "score": round(float(zones.get("candidate_score", 0)), 2), "weight": zone_weight, "role": "Primary · support/resistance behaviour", "detail": zones.get("reason", "No zone reaction")},
+        "MARKET STRUCTURE": {"vote": stairs, "score": round(0.25 * structure_weight if stairs == candidate and approved else 0, 2), "weight": structure_weight, "role": "Context · swing and close structure", "detail": "Staircase is context, not a mandatory entry pattern."},
+        "CANDLE BEHAVIOUR": {"vote": candle_direction, "score": round(0.20 * candle_weight if candle_direction == candidate and approved else 0, 2), "weight": candle_weight, "role": "Evidence · wick, engulfing and close location", "detail": ", ".join(patterns) if patterns else "No named pattern required."},
+        "MARKET REGIME": {"vote": "CALL" if regime.get("tag") == "TrendingBull" else "PUT" if regime.get("tag") == "TrendingBear" else "WAIT", "score": round(0.15 * regime_weight if ((candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear")) and approved else 0, 2), "weight": regime_weight, "role": "Context · adaptive market condition", "detail": regime.get("tag", "UNKNOWN")},
     }
-    base.update({
-        "signal": signal, "stage": "ENTRY READY" if approved else (native_stage or "SCANNING"),
-        "price": price, "candle_time": native_candle_time, "brains": brains,
-        "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in brains.values()), "PUT": sum(v["vote"] == "PUT" for v in brains.values())},
-        "brain_scores": {"CALL": total if signal == "CALL" else 0, "PUT": total if signal == "PUT" else 0},
-        "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
-        "three_steps_result": {"signal": direction_a, "highs": hs, "lows": ls},
-        "fusion": {"state": "APPROVED" if approved else "BLOCKED", "module_scores": raw, "weighted_scores": weighted, "weights": weights, "total_score": total, "size_tier": tier, "block_reasons": hard_reasons},
-        "reason": (f"Adaptive confluence approved · weighted score {total:.2f}/7 · indicative size tier {tier:.0%}." if approved else "GHOST is monitoring this setup: " + '; '.join(hard_reasons)),
-        "entry_point": price if approved else None,
-        "supporting_brains": [name for name, v in brains.items() if v["vote"] == signal] if approved else [],
-    })
+    base.update({"signal": signal, "candidate_direction": candidate if approved else "WAIT",
+                 "stage": "ZONE OPPORTUNITY" if approved else "ZONE MONITORING",
+                 "price": float(live_price), "brains": votes,
+                 "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in votes.values()), "PUT": sum(v["vote"] == "PUT" for v in votes.values())},
+                 "brain_scores": {"CALL": score if signal == "CALL" else 0, "PUT": score if signal == "PUT" else 0},
+                 "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
+                 "zone_analysis": zones, "market_regime": regime,
+                 "three_steps_result": {"signal": stairs},
+                 "fusion": {"state": "OPPORTUNITY FOUND" if approved else "MONITORING", "total_score": round(score, 2),
+                            "threshold": 2.05, "opposing_warning": bool(opposing_warning),
+                            "block_reasons": [] if approved else [zones.get("reason", "No qualified zone reaction yet.")]},
+                 "reason": (f"Zone opportunity identified · {zones.get('state')} · evidence {score:.2f}. Preparing a timed entry." if approved else zones.get("reason", "Monitoring support and resistance.")),
+                 "entry_point": float(live_price) if approved else None,
+                 "zone_id": (f"{candidate}|{round(float(zones.get('support' if candidate == 'CALL' else 'resistance') or 0), 3)}" if approved else None),
+                 "supporting_brains": [k for k,v in votes.items() if v["vote"] == signal] if approved else []})
     return base
 
 def assess_market_structure_risk(structure, direction):
@@ -1054,7 +1195,7 @@ def ghost_protocol(ticks):
 
 
 # ============================================================
-# GHOST 4.4 — REGIME, MANUAL OUTCOME JOURNAL AND RISK GUARDS
+# GHOST 4.6 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
 # ============================================================
 def detect_market_regime(candles):
     """Completed-candle regime estimate; synthetic tick count is never called volume."""
@@ -1101,9 +1242,9 @@ def init_trade_journal():
 
 def setup_fingerprint(result, regime):
     brains = (result or {}).get("brains", {})
-    sr = brains.get("SUPPORT / RESISTANCE", {})
-    cb = brains.get("CANDLE BIBLE", {})
-    hs = brains.get("HOMMA / SAKATA", {})
+    sr = brains.get("ZONE REACTION", {})
+    cb = brains.get("CANDLE BEHAVIOUR", {})
+    hs = brains.get("MARKET STRUCTURE", {})
     stamp = (result or {}).get("candle_time")
     try:
         hour = pd.Timestamp(stamp).hour
@@ -1121,8 +1262,8 @@ def journal_trade_outcome(market, instrument, result, outcome, regime="UNKNOWN",
     with _learning_connect() as conn:
         conn.execute("INSERT INTO ghost_trade_journal(created_at,market,instrument,direction,fingerprint,regime,trigger_type,confirmation,outcome,notes) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (now_cat().isoformat(), market, instrument, (result or {}).get("signal", "WAIT"), fp, regime,
-             (result or {}).get("brains", {}).get("CANDLE BIBLE", {}).get("detail", ""),
-             (result or {}).get("brains", {}).get("HOMMA / SAKATA", {}).get("vote", "WAIT"), outcome, notes[:500]))
+             (result or {}).get("brains", {}).get("ZONE REACTION", {}).get("detail", ""),
+             (result or {}).get("brains", {}).get("MARKET STRUCTURE", {}).get("vote", "WAIT"), outcome, notes[:500]))
     return fp
 
 
@@ -1204,7 +1345,8 @@ FEATURE_NAMES = (
     "body_fraction", "upper_wick_fraction", "lower_wick_fraction", "close_location",
     "return_1_atr", "return_3_atr", "return_5_atr", "ema_spread_atr",
     "support_distance_atr", "resistance_distance_atr",
-    "candle_pattern_bias", "sakata_pattern_bias", "hour_sin", "hour_cos"
+    "candle_pattern_bias", "sakata_pattern_bias", "hour_sin", "hour_cos",
+    "zone_support_evidence", "zone_resistance_evidence", "zone_support_nearness", "zone_resistance_nearness"
 )
 
 
@@ -1217,7 +1359,7 @@ def build_learning_features(result, candles=None):
     result = result or {}
     brains = result.get("brains") or {}
     votes = [_vote_number((brains.get(name) or {}).get("vote", "WAIT")) for name in
-             ("THREE STEPS", "CANDLE BIBLE", "HOMMA / SAKATA", "SUPPORT / RESISTANCE")]
+             ("ZONE REACTION", "MARKET STRUCTURE", "CANDLE BEHAVIOUR", "MARKET REGIME")]
     scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
     call_score = float(scores.get("CALL", 0) or 0)
     put_score = float(scores.get("PUT", 0) or 0)
@@ -1258,7 +1400,16 @@ def build_learning_features(result, candles=None):
                 candle_bias, sakata_bias, np.sin(2*np.pi*hour/24), np.cos(2*np.pi*hour/24)]
     else:
         vals = [0.0] * 14
-    vector = np.asarray(votes + [call_score, put_score, call_score-put_score] + vals, dtype=float)
+    zone = result.get("zone_analysis") or {}
+    sz = zone.get("support_zone") or {}
+    rz = zone.get("resistance_zone") or {}
+    zone_features = [
+        min(5.0, float(zone.get("support_score", 0) or 0)),
+        min(5.0, float(zone.get("resistance_score", 0) or 0)),
+        max(-10.0, min(10.0, float(sz.get("distance_atr", 10) or 10))),
+        max(-10.0, min(10.0, float(rz.get("distance_atr", 10) or 10))),
+    ]
+    vector = np.asarray(votes + [call_score, put_score, call_score-put_score] + vals + zone_features, dtype=float)
     if vector.size != len(FEATURE_NAMES):
         vector = np.resize(vector, len(FEATURE_NAMES))
     return np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).tolist()
@@ -1372,6 +1523,7 @@ def apply_experience_gate(result, model, candles=None):
     probability = predict_experience(model, features)
     model_view = {k:v for k,v in (model or {}).items() if k not in ("weights","mean","scale")}
     model_view["probability_up"] = probability
+    model_view["feature_schema"] = "GHOST_4_6_ZONE_V1"
     result["experience_ai"] = model_view
     candidate = result.get("signal")
     if probability is not None and candidate in ("CALL","PUT"):
@@ -1379,13 +1531,13 @@ def apply_experience_gate(result, model, candles=None):
         if not agrees:
             result["signal"] = "WAIT"
             result["stage"] = "AI DISAGREEMENT / WAIT"
-            result["reason"] = (f"Four-brain candidate {candidate} did not pass GHOST's validated experience model "
+            result["reason"] = (f"Zone-reaction candidate {candidate} did not pass GHOST's validated experience model "
                                 f"(estimated UP probability {probability:.0%}). Candidate cancelled.")
     return result
 
 
 LEARNING_DB = os.getenv("GHOST_DB_PATH", "ghost_learning.sqlite3")
-BRAIN_NAMES = ("THREE STEPS", "CANDLE BIBLE", "HOMMA / SAKATA", "SUPPORT / RESISTANCE")
+BRAIN_NAMES = ("ZONE REACTION", "MARKET STRUCTURE", "CANDLE BEHAVIOUR", "MARKET REGIME")
 
 
 @contextmanager
@@ -1687,52 +1839,66 @@ if not st.session_state.get("ghost_cloud_initial_sync_done", False):
 
 
 # ============================================================
-# 60-SECOND CONSENSUS PREPARATION GATE
+# PREDICTIVE SCHEDULED-ENTRY GATE
 # ============================================================
 
 def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60):
-    """Print a signal only during the first 15 seconds of the candle after its trigger.
-
-    This is a display gate, not an execution engine. Streamlit refresh latency means
-    it cannot guarantee a one-second entry or place an order.
-    """
+    """Prepare a future entry at least prep_seconds ahead, then verify at entry."""
     result = dict(result or {})
     pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
     key = f"{market}|{instrument}"
+    now_utc = pd.Timestamp.now(tz="UTC")
     candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
-    if result.get("stage") in ("FEED CHECK", "INVALIDATED") or candidate is None:
+    if result.get("stage") in ("FEED CHECK", "INVALIDATED", "RISK PAUSE", "AI DISAGREEMENT / WAIT") or candidate is None:
         pending_all.pop(key, None)
         return result
 
-    trigger_time = result.get("candle_time")
-    if trigger_time is None:
-        result.update({"signal":"WAIT", "stage":"SCANNING", "reason":"Waiting for the completed trigger-candle timestamp."})
-        return result
-    trigger_time = pd.Timestamp(trigger_time)
-    if trigger_time.tzinfo is None:
-        trigger_time = trigger_time.tz_localize("UTC")
-    next_open = trigger_time + pd.Timedelta(minutes=1)
-    now_utc = pd.Timestamp.now(tz="UTC")
-    elapsed = (now_utc - next_open).total_seconds()
-    last_issued = st.session_state.setdefault("ghost_last_issued", {})
-    candle_key = str(trigger_time)
-    if last_issued.get(key) == (candidate, candle_key):
-        result.update({"signal":"WAIT", "stage":"SCANNING", "reason":"This trigger candle has already been signalled; waiting for a fresh completed candle."})
-        return result
-    if elapsed < 0:
-        result.update({"signal":"WAIT", "stage":"WAITING FOR NEXT CANDLE", "candidate_direction":candidate,
-                       "entry_time":as_cat(next_open).to_pydatetime(),
-                       "reason":"Trigger confirmed. Waiting for the next 1-minute candle to open; no mid-candle entry."})
-        return result
-    if elapsed > 15:
-        result.update({"signal":"WAIT", "stage":"MISSED ENTRY WINDOW", "candidate_direction":candidate,
-                       "reason":"The next-candle entry window has passed (more than 15 seconds elapsed). Waiting for a new setup."})
+    zone_id = str(result.get("zone_id") or f"{candidate}|{result.get('candle_time', '')}")
+    pending = pending_all.get(key)
+    same_candidate = pending and pending.get("direction") == candidate and pending.get("zone_id") == zone_id
+    if same_candidate:
+        entry_utc = pd.Timestamp(pending["entry_time"])
+        if entry_utc.tzinfo is None:
+            entry_utc = entry_utc.tz_localize("UTC")
+    else:
+        # Stronger zone reactions can target the next minute; developing
+        # reactions get two minutes for another candle of evidence.
+        evidence_score = float((result.get("fusion") or {}).get("total_score", 0) or 0)
+        adaptive_lead = 60 if evidence_score >= 3.5 else 120
+        required_notice = max(int(prep_seconds), adaptive_lead)
+        earliest = now_utc + pd.Timedelta(seconds=required_notice)
+        next_boundary = now_utc.floor("min") + pd.Timedelta(minutes=1)
+        if (next_boundary - now_utc).total_seconds() < required_notice:
+            next_boundary = earliest.ceil("min")
+        entry_utc = next_boundary
+        pending = {"direction": candidate, "zone_id": zone_id,
+                   "entry_time": entry_utc.isoformat(), "created_at": now_utc.isoformat(),
+                   "entry_issued": False}
+        pending_all[key] = pending
+
+    seconds_to_entry = (entry_utc - now_utc).total_seconds()
+    result["candidate_direction"] = candidate
+    result["scheduled_entry_time"] = as_cat(entry_utc).to_pydatetime()
+    result["entry_time"] = as_cat(entry_utc).to_pydatetime()
+    result["preparation_seconds"] = max(0, int(seconds_to_entry))
+    result["entry_notice_rule"] = "Minimum 60 seconds; developing reactions receive a 120-second preparation window."
+    if seconds_to_entry > 0:
+        result.update({"signal": "WAIT", "stage": "PREPARE",
+                       "reason": f"{candidate} opportunity prepared for {as_cat(entry_utc).strftime('%H:%M:%S')} CAT. Market will be rechecked before entry."})
         return result
 
-    last_issued[key] = (candidate, candle_key)
-    result.update({"signal":candidate, "stage":"ENTRY READY", "entry_time":as_cat(next_open).to_pydatetime(),
-                   "entry_point":result.get("price"),
-                   "reason": "Closed-candle confluence confirmed for the new 1-minute candle. Signal only; no order is placed. " + result.get("reason", "")})
+    elapsed = abs(seconds_to_entry)
+    if elapsed <= 15:
+        if not pending.get("entry_issued", False):
+            pending["entry_issued"] = True
+            pending_all[key] = pending
+        result.update({"signal": candidate, "stage": "ENTRY READY",
+                       "entry_point": float(result.get("price")) if result.get("price") is not None else result.get("entry_point"),
+                       "reason": f"Scheduled {candidate} entry time reached at {as_cat(entry_utc).strftime('%H:%M:%S')} CAT. Conditions rechecked; manual entry only."})
+        return result
+    pending_all.pop(key, None)
+    result.update({"signal": "WAIT", "stage": "MISSED ENTRY WINDOW",
+                   "reason": "The scheduled entry window passed. GHOST will wait for a fresh zone opportunity rather than issue a late signal."})
     return result
 
 def build_signal_record(market, instrument, result, expiry=1):
@@ -1774,7 +1940,7 @@ def build_preparation_record(market, instrument, result, expiry=1):
         return None
     return {
         "market": market, "instrument": instrument, "direction": "WAIT",
-        "reason": result.get("reason", "Candidate is under 60-second review; no entry yet."),
+        "reason": result.get("reason", "Candidate is being prepared; no entry yet."),
         "candidate_direction": result.get("candidate_direction", "WAIT"),
         "stage": "PREPARE", "pattern": result.get("pattern", ""),
         "entry_point": result.get("entry_point"),
@@ -1789,39 +1955,45 @@ def build_preparation_record(market, instrument, result, expiry=1):
 
 
 def show_signal_pad(signal):
-    """Minimal user-facing signal pad; detailed reasoning remains in learning data."""
+    """Prominent prepared/actionable signal with exact CAT entry clock."""
     if not signal:
-        st.markdown("<div class='signal-card signal-wait'><h2>WAIT</h2><div class='small-muted'>No active signal</div></div>", unsafe_allow_html=True)
+        st.markdown("<div class='signal-card signal-wait'><h2>SCANNING ZONES</h2><div class='small-muted'>Monitoring support, resistance and live market reaction. No qualified entry is prepared yet.</div></div>", unsafe_allow_html=True)
         return
     now = now_cat()
     entry = datetime.fromisoformat(signal["entry_time"])
     expiry = datetime.fromisoformat(signal["expiry_time"])
-    if signal.get("stage") == "PREPARE" and now >= entry:
-        st.markdown("<div class='signal-card signal-wait'><h2>WAIT</h2><div class='small-muted'>Preparation window closed</div></div>", unsafe_allow_html=True)
+    if entry.tzinfo is None: entry = entry.replace(tzinfo=TZ)
+    if expiry.tzinfo is None: expiry = expiry.replace(tzinfo=TZ)
+    if now >= expiry:
+        st.markdown("<div class='signal-card signal-wait'><h2>SCANNING FOR NEXT OPPORTUNITY</h2><div class='small-muted'>Previous signal window expired.</div></div>", unsafe_allow_html=True)
         return
+    prepared = signal.get("stage") == "PREPARE" or signal.get("status") == "PREPARATION"
+    if prepared and now >= entry:
+        st.markdown("<div class='signal-card signal-wait'><h2>ENTRY RECHECK REQUIRED</h2><div class='small-muted'>The scheduled time arrived, but GHOST has not confirmed the live conditions. Do not enter from an unverified preparation.</div></div>", unsafe_allow_html=True)
+        return
+    if not prepared and now >= entry + timedelta(seconds=15):
+        st.markdown("<div class='signal-card signal-wait'><h2>ENTRY WINDOW CLOSED</h2><div class='small-muted'>The 15-second manual entry window has passed. Waiting for a fresh opportunity.</div></div>", unsafe_allow_html=True)
+        return
+    direction = signal.get("candidate_direction", "WAIT") if prepared else signal.get("direction", "WAIT")
     if now < entry:
-        status = "PREPARE"
+        status = "PREPARED · COUNTDOWN"
         remaining = max(0, int((entry-now).total_seconds()))
-    elif now < expiry:
-        status = "ENTRY WINDOW"
-        remaining = max(0, int((expiry-now).total_seconds()))
     else:
-        status = "EXPIRED"
-        remaining = 0
-    if status == "EXPIRED":
-        st.markdown("<div class='signal-card signal-wait'><h2>WAIT</h2><div class='small-muted'>Signal expired</div></div>", unsafe_allow_html=True)
-        return
-    direction = signal.get("direction", "WAIT")
+        status = "ENTRY WINDOW · VERIFY MARKET"
+        remaining = max(0, int((expiry-now).total_seconds()))
     css = "signal-call" if direction == "CALL" else "signal-put" if direction == "PUT" else "signal-wait"
-    label = "UP / CALL" if direction == "CALL" else "DOWN / PUT" if direction == "PUT" else "WAIT"
+    label = "RISE / CALL" if direction == "CALL" else "FALL / PUT" if direction == "PUT" else "SCANNING"
+    entry_label = entry.strftime("%H:%M:%S")
     st.markdown(
-        f"<div class='signal-card {css}'><div class='small-muted'>GHOST SIGNAL · {signal.get('instrument','')}</div>"
-        f"<h1 style='font-size:30px;margin:2px 0'>{label}</h1><div><b>{status}</b></div></div>",
+        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.6 · {signal.get('instrument','')}</div>"
+        f"<h1 style='font-size:30px;margin:2px 0'>{label}</h1><div><b>{status}</b></div>"
+        f"<div style='font-size:15px;margin-top:6px'>SCHEDULED ENTRY · <b>{entry_label} CAT</b></div>"
+        f"<div class='small-muted'>{signal.get('reason','')}</div></div>",
         unsafe_allow_html=True
     )
     a, b, c = st.columns(3)
-    a.metric("TIMER", f"{remaining//60:02d}:{remaining%60:02d}")
-    b.metric("PRINTED (CAT)", entry.strftime("%H:%M:%S"))
+    a.metric("COUNTDOWN", f"{remaining//60:02d}:{remaining%60:02d}")
+    b.metric("ENTRY (CAT)", entry.strftime("%H:%M:%S"))
     c.metric("EXPIRY (CAT)", expiry.strftime("%H:%M:%S"))
 
 
@@ -1833,24 +2005,32 @@ def chart(df, title, levels=None):
     view = df.tail(110).copy()
     fig = go.Figure(go.Candlestick(
         x=view.datetime, open=view.open, high=view.high, low=view.low, close=view.close,
-        name="LIVE 1M", increasing=dict(line=dict(color="#ffffff",width=1),fillcolor="#ffffff"),
-        decreasing=dict(line=dict(color="#ff334f",width=1),fillcolor="#ff334f")
+        name="LIVE 1M", increasing=dict(line=dict(color="#16c784",width=1),fillcolor="#16c784"),
+        decreasing=dict(line=dict(color="#ea3943",width=1),fillcolor="#ea3943")
     ))
     if levels:
         support=levels.get("support") if isinstance(levels,dict) else None
         resistance=levels.get("resistance") if isinstance(levels,dict) else None
-        if support is not None:
-            fig.add_hline(y=float(support),line_dash="dot",line_color="#a45bd0",line_width=1.4,annotation_text="SUPPORT",annotation_position="bottom right")
-        if resistance is not None:
-            fig.add_hline(y=float(resistance),line_dash="dot",line_color="#ffffff",line_width=1.4,annotation_text="RESISTANCE",annotation_position="top right")
+        sz = levels.get("support_zone") if isinstance(levels,dict) else None
+        rz = levels.get("resistance_zone") if isinstance(levels,dict) else None
+        if sz and sz.get("low") is not None and sz.get("high") is not None:
+            fig.add_hrect(y0=float(sz["low"]), y1=float(sz["high"]), fillcolor="#2878ff", opacity=0.16, line_width=0,
+                          annotation_text="SUPPORT ZONE", annotation_position="bottom right")
+        elif support is not None:
+            fig.add_hline(y=float(support),line_dash="dot",line_color="#2878ff",line_width=1.4,annotation_text="SUPPORT",annotation_position="bottom right")
+        if rz and rz.get("low") is not None and rz.get("high") is not None:
+            fig.add_hrect(y0=float(rz["low"]), y1=float(rz["high"]), fillcolor="#a45bd0", opacity=0.16, line_width=0,
+                          annotation_text="RESISTANCE ZONE", annotation_position="top right")
+        elif resistance is not None:
+            fig.add_hline(y=float(resistance),line_dash="dot",line_color="#a45bd0",line_width=1.4,annotation_text="RESISTANCE",annotation_position="top right")
     fig.update_layout(
         title=dict(text=title,font=dict(size=15,color="#ffffff")),
-        height=300, paper_bgcolor="#170d25", plot_bgcolor="#170d25",
+        height=340, paper_bgcolor="#111a32", plot_bgcolor="#111a32",
         font=dict(color="#ffffff",family="Arial"),
         xaxis_rangeslider_visible=False,
         margin=dict(l=8,r=8,t=42,b=8),
-        xaxis=dict(showgrid=True,gridcolor="#392448",zerolinecolor="#7546a0",rangeslider=dict(visible=False)),
-        yaxis=dict(showgrid=True,gridcolor="#392448",side="right",zerolinecolor="#7546a0"),
+        xaxis=dict(showgrid=True,gridcolor="#26375d",zerolinecolor="#4764a8",rangeslider=dict(visible=False),tickfont=dict(color="#dbe5ff")),
+        yaxis=dict(showgrid=True,gridcolor="#26375d",side="right",zerolinecolor="#4764a8",tickfont=dict(color="#dbe5ff")),
         showlegend=False
     )
     return fig
@@ -1861,16 +2041,18 @@ def chart(df, title, levels=None):
 # ============================================================
 
 with st.sidebar:
-    st.header("Market & controls")
+    st.header("GHOST CONTROL DECK")
 
     market = st.radio(
         "Market engine",
         [
-            "Pocket Option Forex · THREE STEPS",
+            "Pocket Option Forex · ZONE INTELLIGENCE",
             "Deriv Synthetics · GHOST PROTOCOL"
         ],
-        index=1
+        index=1,
+        key="ghost_market_engine"
     )
+    st.markdown("<div class='ghost-zone-status'><b>4.6 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
     if market.startswith("Pocket"):
         old_feed = st.session_state.pop("deriv_live_feed", None)
         st.session_state.pop("deriv_live_symbol", None)
@@ -1979,7 +2161,7 @@ scan_slot = int(time.time() // scan_interval)
 last_slot = st.session_state.get("last_auto_scan_slot")
 
 auto_scan_due = auto_scan and scan_slot != last_slot
-pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST FOUR-BRAIN FOREX|"
+pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST ZONE FOREX|"
 pending_due = any(
     key.startswith(pending_prefix)
     and now_cat() >= datetime.fromisoformat(item.get("entry_at", now_cat().isoformat()))
@@ -2017,13 +2199,13 @@ if run_scan:
                     result["learning_profile"] = profile
                     record_learning_observation("FOREX", pair, result, candles=df)
                     resolve_learning_observations("FOREX", pair, result.get("price"))
-                    model_key = f"FOREX|{pair}"
+                    model_key = f"FOREX|{pair}|GHOST_4_6_ZONE_V1"
                     model_cache = st.session_state.setdefault("ghost_experience_models", {})
                     if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
                         trained = train_experience_model("FOREX", pair)
                         model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                     result = apply_experience_gate(result, model_cache[model_key], df)
-                    result = apply_preparation_gate(result, "GHOST FOUR-BRAIN FOREX", pair, expiry)
+                    result = apply_preparation_gate(result, "GHOST ZONE FOREX", pair, expiry)
                     if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                         st.session_state["ghost_last_candidate"] = {"market": "FOREX", "instrument": pair, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
                     output.append({
@@ -2056,22 +2238,22 @@ if run_scan:
             if candidates:
                 chosen = max(candidates, key=lambda item: item["result"].get("candle_time", ""))
                 existing = st.session_state.get("active_signal")
-                same_active = (existing and existing.get("market") == "GHOST FOUR-BRAIN FOREX"
+                same_active = (existing and existing.get("market") == "GHOST ZONE FOREX"
                                and existing.get("instrument") == chosen["instrument"]
                                and existing.get("direction") == chosen["result"].get("signal")
                                and str(existing.get("candle_time", "")) == str(chosen["result"].get("candle_time", "")))
                 if not same_active:
                     st.session_state["active_signal"] = build_signal_record(
-                        "GHOST FOUR-BRAIN FOREX", chosen["instrument"], chosen["result"], expiry)
+                        "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
             elif preparing:
                 chosen = max(preparing, key=lambda item: item["result"].get("candle_time", ""))
                 prep = build_preparation_record(
-                    "GHOST FOUR-BRAIN FOREX", chosen["instrument"], chosen["result"], expiry)
+                    "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
                 if prep is not None:
                     st.session_state["active_signal"] = prep
             else:
                 active = st.session_state.get("active_signal")
-                if active and active.get("market") == "GHOST FOUR-BRAIN FOREX":
+                if active and active.get("market") == "GHOST ZONE FOREX":
                     st.session_state.pop("active_signal", None)
 
     else:
@@ -2108,13 +2290,21 @@ if run_scan:
                 closed_brain_candles["datetime"] = pd.to_datetime(closed_brain_candles["datetime"], utc=True)
                 closed_brain_candles = closed_brain_candles[closed_brain_candles.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].reset_index(drop=True)
                 profile = learning_profile("DERIV", GHOST_NAME)
+                _forming_bar = None
+                if not candles.empty:
+                    _last_bar = candles.iloc[-1]
+                    _last_bar_time = pd.Timestamp(_last_bar.datetime)
+                    if _last_bar_time.floor("min") == pd.Timestamp.now(tz="UTC").floor("min"):
+                        _forming_bar = _last_bar
                 result = four_brain_decision(closed_brain_candles, result,
-                                             learned_weights=profile["multipliers"], structure_candles=aggregate_timeframe(closed_brain_candles, 5))
+                                             learned_weights=profile["multipliers"],
+                                             structure_candles=aggregate_timeframe(closed_brain_candles, 5),
+                                             forming_candle=_forming_bar)
                 result = apply_trade_safety(result, "DERIV", GHOST_NAME, closed_brain_candles)
                 result["learning_profile"] = profile
                 record_learning_observation("DERIV", GHOST_NAME, result, candles=closed_brain_candles)
                 resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
-                model_key = f"DERIV|{GHOST_NAME}"
+                model_key = f"DERIV|{GHOST_NAME}|GHOST_4_6_ZONE_V1"
                 model_cache = st.session_state.setdefault("ghost_experience_models", {})
                 if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
                     trained = train_experience_model("DERIV", GHOST_NAME)
@@ -2196,7 +2386,14 @@ def selected_result():
 active_signal = st.session_state.get("active_signal")
 if active_signal:
     try:
-        if now_cat() >= datetime.fromisoformat(active_signal["expiry_time"]):
+        _now_signal = now_cat()
+        _entry_signal = datetime.fromisoformat(active_signal["entry_time"])
+        if _entry_signal.tzinfo is None: _entry_signal = _entry_signal.replace(tzinfo=TZ)
+        _signal_deadline = (_entry_signal + timedelta(seconds=15)
+                            if active_signal.get("stage") == "ENTRY READY"
+                            else datetime.fromisoformat(active_signal["expiry_time"]))
+        if _signal_deadline.tzinfo is None: _signal_deadline = _signal_deadline.replace(tzinfo=TZ)
+        if _now_signal >= _signal_deadline:
             st.session_state.pop("active_signal", None)
             active_signal = None
     except Exception:
@@ -2221,16 +2418,20 @@ if market.startswith("Deriv"):
         st.info("Deriv feed has not started yet. Select Deriv and press CONNECT & SCAN GHOST once; automatic scanning then maintains it.")
 show_signal_pad(active_signal)
 if result and result.get("stage") and result.get("stage") not in ("ENTRY READY", "PREPARE"):
-    st.caption(f"GHOST brain status · {result.get('stage')} · {result.get('reason', '')}")
+    _zone = result.get("zone_analysis", {})
+    _zone_state = _zone.get("state", result.get("stage", "SCANNING"))
+    _brief = ("Monitoring both zones. Waiting for a qualified market reaction."
+              if result.get("stage") == "ZONE MONITORING" else result.get("reason", "Monitoring market structure."))
+    st.markdown(f"<div class='ghost-zone-status'><b>MARKET READ · {_zone_state}</b><br>{_brief}</div>", unsafe_allow_html=True)
 if result:
-    with st.expander("FOUR-BRAIN READOUT & LEARNING", expanded=False):
+    with st.expander("GHOST INTELLIGENCE READOUT & LEARNING", expanded=False):
         _brains = result.get("brains", {})
         if _brains:
-            for _name in ("THREE STEPS", "SUPPORT / RESISTANCE", "CANDLE BIBLE", "HOMMA / SAKATA"):
+            for _name in ("ZONE REACTION", "MARKET STRUCTURE", "CANDLE BEHAVIOUR", "MARKET REGIME"):
                 _b = _brains.get(_name, {})
                 st.write(f"**{_name}** · {_b.get('vote', 'WAIT')} · score {_b.get('score', 0)} · {_b.get('detail', '')}")
         else:
-            st.write("Collecting enough completed candles for the four brains to evaluate this setup.")
+            st.write("Collecting enough completed candles to evaluate the current support/resistance zones.")
         _lp = result.get("learning_profile", {})
         st.write(f"Resolved learning observations: {_lp.get('resolved_observations', 0)}")
         for _name, _stats in _lp.get("stats", {}).items():
@@ -2239,9 +2440,13 @@ if result:
         _ai = result.get("experience_ai", {})
         if _ai:
             st.write(f"Experience model: {_ai.get('status', 'collecting')} · resolved examples {_ai.get('samples', 0)}")
+        _za = result.get("zone_analysis", {})
+        if _za:
+            st.write(f"Zone state: {_za.get('state')} · support evidence {_za.get('support_score', 0):.2f} · resistance evidence {_za.get('resistance_score', 0):.2f}")
+            st.write(f"Zone distances: support {_za.get('support_zone', {}).get('distance_atr', 'n/a')} ATR · resistance {_za.get('resistance_zone', {}).get('distance_atr', 'n/a')} ATR")
 
-if result and result.get("stage") in ("PREPARE", "SETUP DEVELOPING") and not active_signal:
-    st.markdown("<div class='signal-card signal-wait'><h3>PREPARE</h3><div class='small-muted'>Potential setup being monitored</div></div>", unsafe_allow_html=True)
+if result and result.get("stage") == "PREPARE" and not active_signal:
+    st.markdown("<div class='signal-card signal-prepared'><h3>ENTRY PREPARED</h3><div class='small-muted'>GHOST has selected a future entry time and is rechecking the zone reaction.</div></div>", unsafe_allow_html=True)
 
 st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
 render_chart_area()
@@ -2283,10 +2488,10 @@ with restore_col:
 
 
 # ============================================================
-# GHOST 4.4 — MANUAL TRADE OUTCOME FEEDBACK
+# GHOST 4.6 — MANUAL TRADE OUTCOME FEEDBACK
 # ============================================================
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST 4.5 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST 4.6 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
 st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
 _saved_candidate = st.session_state.get("ghost_last_candidate") or {}
 active_result = _saved_candidate.get("result")
@@ -2317,4 +2522,4 @@ try:
 except Exception as _journal_exc:
     st.caption(f"Trade journal is unavailable: {_journal_exc}")
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.4 · ADAPTIVE CONFLUENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.6 · ADAPTIVE ZONE INTELLIGENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
