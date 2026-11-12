@@ -346,34 +346,88 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     if len(d) < 25:
         return empty
     price = float(live_price) if live_price is not None and pd.notna(live_price) else float(d.close.iloc[-1])
-    ranges = (d.high.astype(float) - d.low.astype(float)).tail(30)
-    atr = float(ranges.median()) if len(ranges) else 0.0
-    atr = max(atr, abs(price) * 0.00002, 1e-9)
-    tolerance = max(atr * 0.32, abs(price) * 0.000025, 1e-9)
+    # Build structural zones from completed 5m and 10m candles. The 1m chart
+    # supplies reaction/entry evidence only; its individual pivots must not
+    # create a fresh major zone for every small candle swing.
+    def median_range(frame, fallback):
+        if frame is None or len(frame) < 5:
+            return fallback
+        rr = (pd.to_numeric(frame.high, errors="coerce") - pd.to_numeric(frame.low, errors="coerce")).dropna().tail(30)
+        return max(float(rr.median()), fallback) if len(rr) else fallback
 
-    # Pool pivot levels from 1m, completed 5m and completed 10m structure.
+    floor = max(abs(price) * 0.00002, 1e-9)
+    one_min_range = float((d.high.astype(float) - d.low.astype(float)).tail(30).median())
+    one_min_range = max(one_min_range, floor)
+    range_5m = median_range(structure_candles, one_min_range * 3.0)
+    range_10m = median_range(higher_candles, range_5m * 1.8)
+    atr = max(range_5m, floor)  # distances are expressed in structural 5m units
+    tolerance = max(range_5m * 0.38, range_10m * 0.12, floor)
+    cluster_radius = max(range_5m * 0.55, range_10m * 0.16, floor)
+    zone_half = max(range_5m * 0.28, range_10m * 0.10, floor)
+
     low_levels, high_levels = [], []
-    sources = [(d, 2), (structure_candles, 2), (higher_candles, 1)]
-    for frame, strength in sources:
+    sources = [(structure_candles, 2, 3.0), (higher_candles, 1, 2.0)]
+    # Fallback only when higher-timeframe history is unavailable.
+    if all(frame is None or len(frame) < 12 for frame, _, _ in sources):
+        sources = [(d, 3, 0.75)]
+    for frame, strength, weight in sources:
         if frame is None or len(frame) < max(12, strength * 2 + 5):
             continue
         frame = frame.copy().reset_index(drop=True)
         try:
             ph, pl = confirmed_pivots(frame, strength)
-            low_levels.extend(float(v) for _, v in pl)
-            high_levels.extend(float(v) for _, v in ph)
+            low_levels.extend((float(v), weight) for _, v in pl[-80:])
+            high_levels.extend((float(v), weight) for _, v in ph[-80:])
         except Exception:
             continue
-    recent_lows = [v for v in low_levels if v <= price + tolerance]
-    recent_highs = [v for v in high_levels if v >= price - tolerance]
-    # Role-reversal candidates: recently broken levels can now act as the
-    # opposite zone when price has moved through them.
-    broken_resistance = [v for v in high_levels if v < price and price-v <= atr*2.0]
-    broken_support = [v for v in low_levels if v > price and v-price <= atr*2.0]
-    support_candidates = recent_lows + broken_resistance
-    resistance_candidates = recent_highs + broken_support
-    support = max(support_candidates) if support_candidates else float(d.low.tail(25).min())
-    resistance = min(resistance_candidates) if resistance_candidates else float(d.high.tail(25).max())
+
+    def cluster_levels(levels):
+        """Merge nearby pivots into one price zone; reward multi-TF agreement."""
+        groups = []
+        for level, weight in sorted(levels, key=lambda item: item[0]):
+            if not groups or level - groups[-1]["weighted_price"] / groups[-1]["weight"] > cluster_radius:
+                groups.append({"weighted_price": level * weight, "weight": weight, "levels": [level], "score": weight})
+            else:
+                g = groups[-1]
+                g["weighted_price"] += level * weight
+                g["weight"] += weight
+                g["levels"].append(level)
+                g["score"] += weight
+        for g in groups:
+            g["center"] = g["weighted_price"] / g["weight"]
+            g["count"] = len(g["levels"])
+            g["low"] = min(g["levels"]) - zone_half
+            g["high"] = max(g["levels"]) + zone_half
+        return groups
+
+    low_clusters, high_clusters = cluster_levels(low_levels), cluster_levels(high_levels)
+    # A support candidate is a structural low below/near price or a broken
+    # resistance now acting as support. Resistance is the mirrored case.
+    support_groups = [g for g in low_clusters if g["center"] <= price + tolerance]
+    resistance_groups = [g for g in high_clusters if g["center"] >= price - tolerance]
+    broken_res_groups = [g for g in high_clusters if g["center"] < price and price-g["center"] <= atr*2.5]
+    broken_sup_groups = [g for g in low_clusters if g["center"] > price and g["center"]-price <= atr*2.5]
+    support_groups += broken_res_groups
+    resistance_groups += broken_sup_groups
+
+    def choose_group(groups, side):
+        if not groups:
+            return None
+        # Prefer the nearest credible structural cluster, with multi-pivot and
+        # multi-timeframe agreement breaking ties rather than a lone pivot.
+        return min(groups, key=lambda g: (abs(price-g["center"])/max(1.0, g["score"]**0.18), -g["count"]))
+
+    support_group = choose_group(support_groups, "support")
+    resistance_group = choose_group(resistance_groups, "resistance")
+    support = support_group["center"] if support_group else float(d.low.tail(60).min())
+    resistance = resistance_group["center"] if resistance_group else float(d.high.tail(60).max())
+    support_levels = support_group["levels"] if support_group else [support]
+    resistance_levels = resistance_group["levels"] if resistance_group else [resistance]
+    support_band = (min(support_levels) - zone_half, max(support_levels) + zone_half)
+    resistance_band = (min(resistance_levels) - zone_half, max(resistance_levels) + zone_half)
+    # A recently broken structural level is retained as a role-reversal candidate.
+    broken_resistance = [g["center"] for g in broken_res_groups]
+    broken_support = [g["center"] for g in broken_sup_groups]
 
     recent = d.tail(8).reset_index(drop=True)
     if forming_candle is not None:
@@ -402,8 +456,21 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     resistance_dist = abs(resistance-price)/atr
     support_near = support_dist <= 1.35
     resistance_near = resistance_dist <= 1.35
-    support_touches = int((d.low.tail(100).astype(float).sub(support).abs() <= tolerance*1.8).sum())
-    resistance_touches = int((d.high.tail(100).astype(float).sub(resistance).abs() <= tolerance*1.8).sum())
+    # Count distinct 1m reactions against the full structural band, not candle
+    # proximity to a single pivot price. Consecutive candles in one visit count once.
+    def count_zone_visits(frame, band, side):
+        if frame is None or len(frame) == 0:
+            return 0
+        vals = frame.tail(240)
+        touched = (vals.low.astype(float) <= band[1]) & (vals.high.astype(float) >= band[0])
+        visits, inside = 0, False
+        for hit in touched.tolist():
+            if hit and not inside:
+                visits += 1
+            inside = bool(hit)
+        return visits
+    support_touches = count_zone_visits(d, support_band, "support")
+    resistance_touches = count_zone_visits(d, resistance_band, "resistance")
     recent_support_touch = bool((reaction_rows.low.tail(4).astype(float).sub(support).abs() <= tolerance*2.5).any())
     recent_resistance_touch = bool((reaction_rows.high.tail(4).astype(float).sub(resistance).abs() <= tolerance*2.5).any())
     support_reaction = recent_support_touch and support_dist <= 2.5 and (bull_rejection or bull_engulf or (bullish and close_location >= 0.60))
@@ -461,12 +528,13 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     elif resistance_near:
         state = "RESISTANCE TEST · REACTION NOT PROVEN"
 
-    # Build readable zone bands for the chart; zone width adapts to local range.
-    half = max(tolerance, atr*0.22)
-    support_zone = {"low": support-half, "high": support+half, "center": support,
-                    "touches": support_touches, "distance_atr": round(support_dist, 2)}
-    resistance_zone = {"low": resistance-half, "high": resistance+half, "center": resistance,
-                       "touches": resistance_touches, "distance_atr": round(resistance_dist, 2)}
+    # Chart bands preserve the whole clustered structural area.
+    support_zone = {"low": support_band[0], "high": support_band[1], "center": support,
+                    "touches": support_touches, "pivot_count": len(support_levels),
+                    "distance_atr": round(support_dist, 2), "timeframe_basis": "5m + 10m"}
+    resistance_zone = {"low": resistance_band[0], "high": resistance_band[1], "center": resistance,
+                       "touches": resistance_touches, "pivot_count": len(resistance_levels),
+                       "distance_atr": round(resistance_dist, 2), "timeframe_basis": "5m + 10m"}
     reason = (f"{state}; support evidence {s_score:.2f}, resistance evidence {r_score:.2f}; "
               f"support distance {support_dist:.2f} ATR, resistance distance {resistance_dist:.2f} ATR.")
     return {"support": support, "resistance": resistance,
@@ -504,7 +572,7 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     zones = zone_reaction_analysis(d, live_price, structure, higher, forming_candle=forming_candle)
     sr = {"support": zones.get("support"), "resistance": zones.get("resistance"),
           "support_zone": zones.get("support_zone"), "resistance_zone": zones.get("resistance_zone"),
-          "note": "Adaptive 1m/5m/10m pivot zones; role reversals and reaction context included."}
+          "note": "Clustered 5m/10m structural zones; 1m candles supply reaction and entry evidence; role reversals included."}
     bible = candle_bible_analysis(d)
     patterns = [str(x).upper() for x in bible.get("patterns", [])]
     sakata = homma_sakata_analysis(d)
