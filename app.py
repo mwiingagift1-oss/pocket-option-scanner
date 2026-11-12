@@ -37,7 +37,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.4 Adaptive Confluence",
+    page_title="GHOST Protocol 4.5 Live Feed Repair",
     page_icon="📡",
     layout="wide"
 )
@@ -98,7 +98,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">FOUR INTELLIGENCES · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.4</div><div class="ghost-sub">LIVE SIGNALS · CANDLE CHART · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">FOUR INTELLIGENCES · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.5</div><div class="ghost-sub">LIVE SIGNALS · CANDLE CHART · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -305,20 +305,10 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                         structure_candles=None):
     """Strict four-brain fusion. The staircase remains the directional authority."""
     base = dict(staircase_result or {})
-    # A contextual layer may veto a staircase, never manufacture one.
+    # The four brains evaluate every snapshot for context and learning. The
+    # native C1/C2/C3 staircase remains the only entry authority.
     native_stage = base.get("stage")
     native_signal = base.get("signal", "WAIT")
-    if native_stage is not None and native_stage != "ENTRY READY":
-        base["signal"] = "WAIT"
-        base.setdefault("brains", {})
-        base["fusion"] = {"state": "BLOCKED", "block_reasons": [f"Native staircase stage is {native_stage}; four-brain context cannot override it."]}
-        base["reason"] = f"Native Three-Step gate: {native_stage}. Four-brain intelligence cannot create an entry. {base.get('reason', '')}"
-        return base
-    if native_signal not in ("CALL", "PUT"):
-        base["signal"] = "WAIT"
-        base["stage"] = native_stage or "SCANNING"
-        base["reason"] = "Native Three-Step staircase has no directional entry; confluence cannot create one."
-        return base
     empty = {"signal": "WAIT", "stage": "SCANNING", "brains": {},
              "fusion": {"state": "COLLECTING"}, "brain_scores": {"CALL": 0, "PUT": 0}}
     if candles is None or len(candles) < 30:
@@ -343,7 +333,8 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     # B: Location. A single touch is weak and cannot authorize an entry.
     sr = support_resistance_analysis(structure, lookback=120)
     last = d.iloc[-1]
-    price = float(last.close)
+    price = float(base.get("price", last.close))
+    native_candle_time = base.get("candle_time", last.datetime)
     ranges = (structure.high.astype(float) - structure.low.astype(float)).tail(20)
     tolerance = max(float(ranges.median()) * 0.18, abs(price) * 0.00015, 1e-12)
     sup, res = sr.get("support"), sr.get("resistance")
@@ -402,6 +393,9 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     if disagreement: hard_reasons.append("Homma/Sakata confirmation directly disagrees")
     if not aligned: hard_reasons.append("staircase direction and trigger direction do not align")
     if total < 5.0: hard_reasons.append("weighted confluence score is below 5")
+    if native_stage != "ENTRY READY": hard_reasons.append(f"Three-Step gate is {native_stage or 'not ready'}")
+    if native_signal not in ("CALL", "PUT") or native_signal != trigger_direction:
+        hard_reasons.append("native C1/C2/C3 direction is not confirmed for this brain vote")
     tier = 1.0 if total >= 6.5 and trigger_score == 2 and conf_score == 1 else 0.75 if total >= 6.0 else 0.50 if total >= 5.0 and trigger_score == 2 else 0.0
     approved = not hard_reasons and tier > 0
     signal = trigger_direction if approved else "WAIT"
@@ -412,14 +406,14 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
         "HOMMA / SAKATA": {"vote": homma_direction, "score": conf_score, "weight": weights["D"], "role": "Confirmation · not an entry trigger", "detail": '; '.join(observations) if observations else "No validated directional formation"},
     }
     base.update({
-        "signal": signal, "stage": "ENTRY READY" if approved else "SCANNING",
-        "price": price, "candle_time": last.datetime, "brains": brains,
+        "signal": signal, "stage": "ENTRY READY" if approved else (native_stage or "SCANNING"),
+        "price": price, "candle_time": native_candle_time, "brains": brains,
         "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in brains.values()), "PUT": sum(v["vote"] == "PUT" for v in brains.values())},
         "brain_scores": {"CALL": total if signal == "CALL" else 0, "PUT": total if signal == "PUT" else 0},
         "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
         "three_steps_result": {"signal": direction_a, "highs": hs, "lows": ls},
         "fusion": {"state": "APPROVED" if approved else "BLOCKED", "module_scores": raw, "weighted_scores": weighted, "weights": weights, "total_score": total, "size_tier": tier, "block_reasons": hard_reasons},
-        "reason": (f"Adaptive confluence approved · weighted score {total:.2f}/7 · indicative size tier {tier:.0%}." if approved else "GHOST blocked this setup: " + '; '.join(hard_reasons)),
+        "reason": (f"Adaptive confluence approved · weighted score {total:.2f}/7 · indicative size tier {tier:.0%}." if approved else "GHOST is monitoring this setup: " + '; '.join(hard_reasons)),
         "entry_point": price if approved else None,
         "supporting_brains": [name for name, v in brains.items() if v["vote"] == signal] if approved else [],
     })
@@ -907,6 +901,76 @@ def aggregate_timeframe(one_minute, minutes):
     ]
     return result.drop(columns=["observed_minutes"]).reset_index(drop=True)
 
+
+
+def identify_candle_one(c1, previous):
+    """Identify C1 from closing-price staircase structure, never candle size.
+
+    Bullish C1: close steps above the previous close and its low does not break
+    the previous low. Bearish C1 is the mirrored condition. This is only a
+    trigger candidate; C2 must still close beyond the C1 close.
+    """
+    try:
+        c1_close, prev_close = float(c1.close), float(previous.close)
+        c1_low, prev_low = float(c1.low), float(previous.low)
+        c1_high, prev_high = float(c1.high), float(previous.high)
+    except (AttributeError, TypeError, ValueError):
+        return None, "Invalid candle data"
+    if c1_close > prev_close:
+        return "CALL", "BULLISH THREE-STEP C1 · higher closing-price step"
+    if c1_close < prev_close:
+        return "PUT", "BEARISH THREE-STEP C1 · lower closing-price step"
+    return None, "No closing-price staircase trigger"
+
+
+def analyze_market_structure(candles):
+    """Describe recent close/swing pressure as context; never invent a signal."""
+    if candles is None or len(candles) < 6:
+        return {"state": "COLLECTING", "opposing_pressure": None,
+                "detail": "Need at least six completed candles for structure context."}
+    d = candles.tail(12).reset_index(drop=True)
+    closes = d.close.astype(float)
+    highs = d.high.astype(float)
+    lows = d.low.astype(float)
+    up_closes = sum(closes.iloc[i] > closes.iloc[i-1] for i in range(1, len(closes)))
+    down_closes = sum(closes.iloc[i] < closes.iloc[i-1] for i in range(1, len(closes)))
+    higher_lows = sum(lows.iloc[i] > lows.iloc[i-1] for i in range(1, len(lows)))
+    lower_highs = sum(highs.iloc[i] < highs.iloc[i-1] for i in range(1, len(highs)))
+    pressure = None
+    if up_closes >= 7 and higher_lows >= 6:
+        pressure = "BULLISH"
+    elif down_closes >= 7 and lower_highs >= 6:
+        pressure = "BEARISH"
+    return {"state": "STRUCTURE READ", "opposing_pressure": pressure,
+            "up_closes": int(up_closes), "down_closes": int(down_closes),
+            "higher_lows": int(higher_lows), "lower_highs": int(lower_highs),
+            "detail": "Recent completed-candle close and swing structure; context only."}
+
+
+def assess_candle3_risk(completed, direction, c2, live_price):
+    """Return only clear C3 invalidation/exhaustion warnings, not size filters."""
+    warnings = []
+    if completed is None or len(completed) < 3:
+        return warnings
+    try:
+        c1_close = float(completed.iloc[-2].close)
+        c2_close = float(c2.close)
+        live_price = float(live_price)
+        # Hard invalidation is handled by ghost_protocol before this function.
+        # Here only warn when the C2 candle itself is unusually extended versus
+        # its recent range; candle size does not decide direction.
+        recent_ranges = (completed.high.astype(float) - completed.low.astype(float)).tail(20)
+        typical = float(recent_ranges.median()) if len(recent_ranges) else 0.0
+        c2_range = float(c2.high) - float(c2.low)
+        if typical > 0 and c2_range > 3.5 * typical:
+            warnings.append("Candle 2 range is unusually expanded; avoid chasing the move.")
+        if direction == "CALL" and live_price <= c1_close:
+            warnings.append("Candle 3 is no longer above the C1 close.")
+        elif direction == "PUT" and live_price >= c1_close:
+            warnings.append("Candle 3 is no longer below the C1 close.")
+    except (TypeError, ValueError, AttributeError, IndexError):
+        warnings.append("Candle 3 risk context could not be fully evaluated.")
+    return warnings
 
 
 def ghost_protocol(ticks):
@@ -1804,7 +1868,8 @@ with st.sidebar:
         [
             "Pocket Option Forex · THREE STEPS",
             "Deriv Synthetics · GHOST PROTOCOL"
-        ]
+        ],
+        index=1
     )
     if market.startswith("Pocket"):
         old_feed = st.session_state.pop("deriv_live_feed", None)
@@ -1849,7 +1914,7 @@ with st.sidebar:
         st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "Deriv keeps a persistent live tick subscription; the dashboard refreshes every 5 seconds. "
+        "Deriv keeps a persistent live tick subscription; the dashboard refreshes every 2 seconds. "
         "Forex scans once per minute."
     )
     st.divider()
@@ -1902,7 +1967,7 @@ if st.session_state.pop("stop_stream_requested", False):
 # the persistent Deriv tick subscription running between dashboard updates.
 # The analysis scheduler below remains unchanged.
 if auto_refresh:
-    st_autorefresh(interval=5000, key="desk_clock")
+    st_autorefresh(interval=2000, key="desk_clock")
 
 now = now_cat()
 st.caption(
@@ -2141,7 +2206,39 @@ if active_signal:
 result, instrument_name = selected_result()
 
 st.markdown("<div class='ghost-kicker'>LIVE SIGNAL PAD</div>", unsafe_allow_html=True)
+if market.startswith("Deriv"):
+    _feed = st.session_state.get("deriv_live_feed")
+    _feed_state = _feed.status() if _feed is not None else None
+    if _feed_state:
+        _age = _feed_state.get("last_tick_age")
+        _age_text = "waiting for first live tick" if _age is None else f"last tick {_age:.1f}s ago"
+        st.caption(f"DERIV FEED · {'CONNECTED' if _feed_state.get('connected') else 'RECONNECTING'} · {_age_text} · reconnects {_feed_state.get('reconnects', 0)}")
+        if _feed_state.get("last_error"):
+            st.warning(f"Feed detail: {_feed_state['last_error']}")
+    elif st.session_state.get("deriv_scan_error"):
+        st.error(f"Deriv connection/scan: {st.session_state['deriv_scan_error']}")
+    else:
+        st.info("Deriv feed has not started yet. Select Deriv and press CONNECT & SCAN GHOST once; automatic scanning then maintains it.")
 show_signal_pad(active_signal)
+if result and result.get("stage") and result.get("stage") not in ("ENTRY READY", "PREPARE"):
+    st.caption(f"GHOST brain status · {result.get('stage')} · {result.get('reason', '')}")
+if result:
+    with st.expander("FOUR-BRAIN READOUT & LEARNING", expanded=False):
+        _brains = result.get("brains", {})
+        if _brains:
+            for _name in ("THREE STEPS", "SUPPORT / RESISTANCE", "CANDLE BIBLE", "HOMMA / SAKATA"):
+                _b = _brains.get(_name, {})
+                st.write(f"**{_name}** · {_b.get('vote', 'WAIT')} · score {_b.get('score', 0)} · {_b.get('detail', '')}")
+        else:
+            st.write("Collecting enough completed candles for the four brains to evaluate this setup.")
+        _lp = result.get("learning_profile", {})
+        st.write(f"Resolved learning observations: {_lp.get('resolved_observations', 0)}")
+        for _name, _stats in _lp.get("stats", {}).items():
+            _acc = _stats.get("accuracy")
+            st.write(f"{_name}: {_stats.get('samples', 0)} observations · accuracy {'not established' if _acc is None else f'{_acc:.1%}'} · weight {_stats.get('multiplier', 1.0):.3f}")
+        _ai = result.get("experience_ai", {})
+        if _ai:
+            st.write(f"Experience model: {_ai.get('status', 'collecting')} · resolved examples {_ai.get('samples', 0)}")
 
 if result and result.get("stage") in ("PREPARE", "SETUP DEVELOPING") and not active_signal:
     st.markdown("<div class='signal-card signal-wait'><h3>PREPARE</h3><div class='small-muted'>Potential setup being monitored</div></div>", unsafe_allow_html=True)
@@ -2189,7 +2286,7 @@ with restore_col:
 # GHOST 4.4 — MANUAL TRADE OUTCOME FEEDBACK
 # ============================================================
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST 4.4 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST 4.5 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
 st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
 _saved_candidate = st.session_state.get("ghost_last_candidate") or {}
 active_result = _saved_candidate.get("result")
