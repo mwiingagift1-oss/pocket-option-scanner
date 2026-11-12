@@ -38,7 +38,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.7 Adaptive Zone Intelligence",
+    page_title="GHOST Protocol 4.8 Signal Integrity",
     page_icon="📡",
     layout="wide"
 )
@@ -126,7 +126,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.7</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.8</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -556,11 +556,13 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
 def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                         pullback_pct=50, learned_weights=None,
                         structure_candles=None, forming_candle=None):
-    """Unified zone-first decision. Candle formations are supporting evidence, never vetoes."""
+    """Zone-first fusion constrained by the Three-Step closing-price structure."""
     base = dict(staircase_result or {})
-    if base.get("stage") == "FEED CHECK":
-        base.update({"signal": "WAIT", "candidate_direction": "WAIT", "reason": base.get("reason", "Live feed needs attention."),
-                     "brains": {}, "fusion": {"state": "FEED CHECK"}})
+    base_stage = base.get("stage", "SCANNING")
+    if base_stage in ("FEED CHECK", "INVALIDATED"):
+        base.update({"signal": "WAIT", "candidate_direction": "WAIT",
+                     "reason": base.get("reason", "Feed or staircase confirmation is invalid."),
+                     "brains": {}, "fusion": {"state": base_stage}})
         return base
     if candles is None or len(candles) < 30:
         base.update({"signal": "WAIT", "stage": "COLLECTING DATA", "reason": "Collecting completed candles for zone analysis.",
@@ -569,22 +571,27 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     d = candles.copy().reset_index(drop=True)
     structure = structure_candles.copy().reset_index(drop=True) if structure_candles is not None else aggregate_timeframe(d, 5)
     higher = aggregate_timeframe(d, 10)
-    live_price = base.get("price", d.close.iloc[-1])
+    live_price = float(base.get("price", d.close.iloc[-1]))
     zones = zone_reaction_analysis(d, live_price, structure, higher, forming_candle=forming_candle)
     sr = {"support": zones.get("support"), "resistance": zones.get("resistance"),
           "support_zone": zones.get("support_zone"), "resistance_zone": zones.get("resistance_zone"),
-          "note": "Clustered 5m/10m structural zones; 1m candles supply reaction and entry evidence; role reversals included."}
+          "note": "Fixed clustered 5m/10m structural zones; 1m candles confirm the reaction."}
     bible = candle_bible_analysis(d)
     patterns = [str(x).upper() for x in bible.get("patterns", [])]
     sakata = homma_sakata_analysis(d)
-    observations = [str(x).upper() for x in sakata.get("observations", [])]
-    stairs = base.get("signal", "WAIT")
+    stairs = base.get("candidate_direction") or (base.get("signal") if base.get("signal") in ("CALL", "PUT") else "WAIT")
     if stairs not in ("CALL", "PUT"):
         stairs = "WAIT"
-    zone_direction = zones.get("candidate", "WAIT")
-    candle_direction = "CALL" if zones.get("bull_rejection") or zones.get("bull_engulfing") else "PUT" if zones.get("bear_rejection") or zones.get("bear_engulfing") else "WAIT"
+    raw_zone_direction = zones.get("candidate", "WAIT")
+    if raw_zone_direction == "CALL":
+        zone_event_confirmed = bool(zones.get("support_reaction") or zones.get("breakout_up") or zones.get("retest_up"))
+    elif raw_zone_direction == "PUT":
+        zone_event_confirmed = bool(zones.get("resistance_reaction") or zones.get("breakout_down") or zones.get("retest_down"))
+    else:
+        zone_event_confirmed = False
+    zone_direction = raw_zone_direction if zone_event_confirmed else "WAIT"
+    candle_direction = "CALL" if zones.get("bull_rejection") else "PUT" if zones.get("bear_rejection") else "WAIT"
     regime = detect_market_regime(d)
-    candidate = zone_direction
     learned_weights = learned_weights or {}
     def _weight(name):
         try: return max(0.85, min(1.15, float(learned_weights.get(name, 1.0))))
@@ -593,40 +600,64 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     structure_weight = _weight("MARKET STRUCTURE")
     candle_weight = _weight("CANDLE BEHAVIOUR")
     regime_weight = _weight("MARKET REGIME")
-    score = float(zones.get("candidate_score", 0.0)) * zone_weight
-    # Staircase, candle and regime contribute weighted evidence; none can veto a valid zone reaction.
-    if candidate == "CALL" and stairs == "CALL": score += 0.25 * structure_weight
-    if candidate == "PUT" and stairs == "PUT": score += 0.25 * structure_weight
-    if candidate == "CALL" and candle_direction == "CALL": score += 0.20 * candle_weight
-    if candidate == "PUT" and candle_direction == "PUT": score += 0.20 * candle_weight
-    if candidate == "CALL" and regime.get("tag") == "TrendingBull": score += 0.15 * regime_weight
-    if candidate == "PUT" and regime.get("tag") == "TrendingBear": score += 0.15 * regime_weight
-    # A strong opposite candle is a warning, not an automatic veto.
-    opposing_warning = (candidate == "CALL" and zones.get("bear_engulfing")) or (candidate == "PUT" and zones.get("bull_engulfing"))
-    if opposing_warning: score -= 0.45
-    approved = candidate in ("CALL", "PUT") and score >= 2.05
+
+    setup_location = "NONE"
+    candidate = "WAIT"
+    score = 0.0
+    approved = False
+    # Zone signal: price must be reacting at/near an identified structural zone,
+    # and the staircase direction must agree. Named candle patterns are optional.
+    if zone_direction in ("CALL", "PUT") and zone_direction == stairs and base_stage in ("SETUP DEVELOPING", "ENTRY READY", "CAUTION"):
+        candidate = zone_direction
+        setup_location = "ZONE"
+        score = float(zones.get("candidate_score", 0.0)) * zone_weight
+        score += 0.25 * structure_weight
+        if candle_direction == candidate:
+            score += 0.15 * candle_weight
+        if (candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear"):
+            score += 0.10 * regime_weight
+        approved = score >= 2.05
+    # Mid-range signal: only a developing Three-Step setup may be considered.
+    # historical_pattern_memory() applies a >=20-neighbour and >=60% directional
+    # support requirement before this candidate can survive.
+    elif zone_direction == "WAIT" and stairs in ("CALL", "PUT") and base_stage == "SETUP DEVELOPING":
+        in_zone_context = bool(zones.get("support_near") or zones.get("resistance_near") or
+                               zones.get("recent_support_touch") or zones.get("recent_resistance_touch"))
+        if not in_zone_context:
+            candidate = stairs
+            setup_location = "MID-RANGE"
+            score = 2.05
+            approved = True
+
     signal = candidate if approved else "WAIT"
     votes = {
-        "ZONE REACTION": {"vote": zone_direction, "score": round(float(zones.get("candidate_score", 0)), 2), "weight": zone_weight, "role": "Primary · support/resistance behaviour", "detail": zones.get("reason", "No zone reaction")},
-        "MARKET STRUCTURE": {"vote": stairs, "score": round(0.25 * structure_weight if stairs == candidate and approved else 0, 2), "weight": structure_weight, "role": "Context · swing and close structure", "detail": "Staircase is context, not a mandatory entry pattern."},
-        "CANDLE BEHAVIOUR": {"vote": candle_direction, "score": round(0.20 * candle_weight if candle_direction == candidate and approved else 0, 2), "weight": candle_weight, "role": "Evidence · wick, engulfing and close location", "detail": ", ".join(patterns) if patterns else "No named pattern required."},
-        "MARKET REGIME": {"vote": "CALL" if regime.get("tag") == "TrendingBull" else "PUT" if regime.get("tag") == "TrendingBear" else "WAIT", "score": round(0.15 * regime_weight if ((candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear")) and approved else 0, 2), "weight": regime_weight, "role": "Context · adaptive market condition", "detail": regime.get("tag", "UNKNOWN")},
+        "ZONE REACTION": {"vote": zone_direction, "score": round(float(zones.get("candidate_score", 0)), 2), "weight": zone_weight, "role": "Primary location evidence", "detail": zones.get("reason", "No qualifying zone reaction")},
+        "MARKET STRUCTURE": {"vote": stairs, "score": round(0.25 * structure_weight if stairs == candidate and approved else 0, 2), "weight": structure_weight, "role": "Three-Step closing-price structure", "detail": "C1 identifies; C2 must close beyond C1; C3 is the entry opportunity."},
+        "CANDLE BEHAVIOUR": {"vote": candle_direction, "score": round(0.15 * candle_weight if candle_direction == candidate and approved else 0, 2), "weight": candle_weight, "role": "Supporting wick/rejection evidence; engulfing is optional", "detail": ", ".join(patterns) if patterns else "No named pattern required."},
+        "MARKET REGIME": {"vote": "CALL" if regime.get("tag") == "TrendingBull" else "PUT" if regime.get("tag") == "TrendingBear" else "WAIT", "score": round(0.10 * regime_weight if ((candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear")) and approved else 0, 2), "weight": regime_weight, "role": "Context, not a mandatory direction filter", "detail": regime.get("tag", "UNKNOWN")},
     }
+    reference = base.get("staircase_reference", base.get("c1_close", base.get("entry_point")))
+    zone_level = zones.get("support" if candidate == "CALL" else "resistance") if candidate in ("CALL", "PUT") else None
     base.update({"signal": signal, "candidate_direction": candidate if approved else "WAIT",
-                 "stage": "ZONE OPPORTUNITY" if approved else "ZONE MONITORING",
-                 "price": float(live_price), "brains": votes,
+                 "staircase_stage": base_stage, "setup_location": setup_location,
+                 "stage": ("ZONE OPPORTUNITY" if setup_location == "ZONE" else "MID-RANGE OPPORTUNITY") if approved else "ZONE MONITORING",
+                 "price": live_price, "brains": votes,
                  "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in votes.values()), "PUT": sum(v["vote"] == "PUT" for v in votes.values())},
                  "brain_scores": {"CALL": score if signal == "CALL" else 0, "PUT": score if signal == "PUT" else 0},
                  "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
                  "zone_analysis": zones, "market_regime": regime,
-                 "three_steps_result": {"signal": stairs},
+                 "three_steps_result": {"signal": stairs, "reference": reference},
+                 "staircase_reference": reference,
                  "fusion": {"state": "OPPORTUNITY FOUND" if approved else "MONITORING", "total_score": round(score, 2),
-                            "threshold": 2.05, "opposing_warning": bool(opposing_warning),
-                            "block_reasons": [] if approved else [zones.get("reason", "No qualified zone reaction yet.")]},
-                 "reason": (f"Zone opportunity identified · {zones.get('state')} · evidence {score:.2f}. Preparing a timed entry." if approved else zones.get("reason", "Monitoring support and resistance.")),
-                 "entry_point": float(live_price) if approved else None,
-                 "zone_id": (f"{candidate}|{round(float(zones.get('support' if candidate == 'CALL' else 'resistance') or 0), 3)}" if approved else None),
+                            "threshold": 2.05, "setup_location": setup_location,
+                            "block_reasons": [] if approved else [zones.get("reason", "No qualified zone/staircase alignment.")]},
+                 "reason": (f"{setup_location} candidate {candidate} · Three-Step C1/C2 developing · evidence {score:.2f}. Preparing one candle only." if approved else zones.get("reason", "Waiting for a qualified reaction and staircase.")),
+                 "entry_point": reference,
+                 "zone_id": (f"{candidate}|{round(float(zone_level), 3)}" if zone_level is not None else f"MID|{candidate}|{base.get('candle1_time', '')}"),
                  "supporting_brains": [k for k,v in votes.items() if v["vote"] == signal] if approved else []})
+    # Correct a literal typo defensively in the directional score mapping.
+    if signal == "PUT":
+        base["brain_scores"] = {"CALL": 0, "PUT": score}
     return base
 
 def assess_market_structure_risk(structure, direction):
@@ -1158,28 +1189,19 @@ def analyze_market_structure(candles):
 
 
 def assess_candle3_risk(completed, direction, c2, live_price):
-    """Return only clear C3 invalidation/exhaustion warnings, not size filters."""
+    """Only flag a genuine break of the C1 swing extreme; candle size is irrelevant."""
     warnings = []
     if completed is None or len(completed) < 3:
         return warnings
     try:
-        c1_close = float(completed.iloc[-2].close)
-        c2_close = float(c2.close)
+        c1 = completed.iloc[-2]
         live_price = float(live_price)
-        # Hard invalidation is handled by ghost_protocol before this function.
-        # Here only warn when the C2 candle itself is unusually extended versus
-        # its recent range; candle size does not decide direction.
-        recent_ranges = (completed.high.astype(float) - completed.low.astype(float)).tail(20)
-        typical = float(recent_ranges.median()) if len(recent_ranges) else 0.0
-        c2_range = float(c2.high) - float(c2.low)
-        if typical > 0 and c2_range > 3.5 * typical:
-            warnings.append("Candle 2 range is unusually expanded; avoid chasing the move.")
-        if direction == "CALL" and live_price <= c1_close:
-            warnings.append("Candle 3 is no longer above the C1 close.")
-        elif direction == "PUT" and live_price >= c1_close:
-            warnings.append("Candle 3 is no longer below the C1 close.")
+        if direction == "CALL" and live_price < float(c1.low):
+            warnings.append("Price has broken below the C1 swing low; bullish staircase integrity is at risk.")
+        elif direction == "PUT" and live_price > float(c1.high):
+            warnings.append("Price has broken above the C1 swing high; bearish staircase integrity is at risk.")
     except (TypeError, ValueError, AttributeError, IndexError):
-        warnings.append("Candle 3 risk context could not be fully evaluated.")
+        warnings.append("C3 structural risk could not be fully evaluated; verify feed before entry.")
     return warnings
 
 
@@ -1229,21 +1251,20 @@ def ghost_protocol(ticks):
     if c3_sequence:
         c1_close, c2_close = float(c1.close), float(c2.close)
         c2_confirmed = c2_close > c1_close if c1_direction == "CALL" else c2_close < c1_close
-        c3_valid = latest_price > c1_close if c1_direction == "CALL" else latest_price < c1_close
-        base.update({"pattern": c1_pattern, "entry_point": c1_close, "candle1_time": c1_time,
+        base.update({"pattern": c1_pattern, "entry_point": c1_close, "staircase_reference": c1_close,
+                     "c1_close": c1_close, "c1_high": float(c1.high), "c1_low": float(c1.low),
+                     "candle1_time": c1_time, "candidate_direction": c1_direction,
                      "candle2_close": c2_close, "entry_time": current_minute})
         if not c2_confirmed:
-            return {**base, "stage": "INVALIDATED", "reason": "Candle 2 did not CLOSE beyond Candle 1 close. Staircase invalidated; no entry."}
-        if not c3_valid:
-            return {**base, "stage": "INVALIDATED", "reason": "Candle 3 crossed back through Candle 1 close. Staircase invalidated; no entry."}
+            return {**base, "signal": "WAIT", "stage": "INVALIDATED",
+                    "reason": "Candle 2 did not CLOSE beyond Candle 1 close. The Three-Step confirmation failed."}
+        # C3 may retrace while it forms. A temporary move around C1 close is not
+        # itself a failure; the confirmed C2 close and C1 swing extreme are the
+        # structural references. The entry quote is captured separately.
         warnings = assess_candle3_risk(completed, c1_direction, c2, latest_price)
         warnings.extend(assess_market_structure_risk(market_structure, c1_direction))
-        if warnings:
-            return {**base, "signal": c1_direction, "stage": "CAUTION",
-                    "reason": "C1/C2 confirmation exists, but soft risk warnings require caution. This is NOT ENTRY READY.",
-                    "warnings": warnings, "stage_detail": "STAIRCASE VALID — CAUTION"}
-        return {**base, "signal": c1_direction, "stage": "ENTRY READY", "warnings": [],
-                "reason": f"Candle 2 closed beyond Candle 1 close and Candle 3 remains on the valid side of {fmt_price(c1_close)}. Manual {c1_direction} entry window.",
+        return {**base, "signal": c1_direction, "stage": "ENTRY READY", "warnings": warnings,
+                "reason": f"Candle 2 CLOSED beyond Candle 1 close ({fmt_price(c1_close)}). The next-candle opportunity is being checked; ordinary C3 pullbacks do not erase the setup.",
                 "stage_detail": "C2 CLOSED — C3 ENTRY WINDOW"}
 
     # SECOND: current candle is C2 and the latest completed candle may be C1.
@@ -1256,7 +1277,10 @@ def ghost_protocol(ticks):
         beyond = latest_price > c1_close if direction == "CALL" else latest_price < c1_close
         base.update({"pattern": pattern, "entry_point": c1_close, "candle1_time": c1_time})
         if beyond:
-            return {**base, "stage": "SETUP DEVELOPING", "reason": f"{pattern} identified. Candle 2 is temporarily beyond C1 close but has NOT closed. No directional signal yet.",
+            return {**base, "stage": "SETUP DEVELOPING", "candidate_direction": direction,
+                    "c1_close": c1_close, "c1_high": float(c1.high), "c1_low": float(c1.low),
+                    "staircase_reference": c1_close,
+                    "reason": f"{pattern} identified. Candle 2 is developing beyond C1 close; it is not confirmed until this candle closes.",
                     "entry_time": current_minute + pd.Timedelta(minutes=1), "countdown": max(0, int(60-candle_age))}
         return {**base, "stage": "CANDLE 2 WAITING", "reason": f"{pattern} found. Waiting for Candle 2 to move beyond C1 close at {fmt_price(c1_close)}."}
 
@@ -1264,7 +1288,7 @@ def ghost_protocol(ticks):
 
 
 # ============================================================
-# GHOST 4.7 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
+# GHOST 4.8 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
 # ============================================================
 def detect_market_regime(candles):
     """Completed-candle regime estimate; synthetic tick count is never called volume."""
@@ -1864,7 +1888,7 @@ def hydrate_signal_history_from_observations(db_path=None):
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(signal_id) DO UPDATE SET
                     settlement_price=COALESCE(excluded.settlement_price,ghost_signal_history.settlement_price),
-                    status=CASE WHEN ghost_signal_history.status IN ('WIN','LOSS','DRAW','CANCELLED','MISSED')
+                    status=CASE WHEN ghost_signal_history.status IN ('WIN','LOSS','DRAW','VOID','CANCELLED','MISSED')
                                 THEN ghost_signal_history.status ELSE excluded.status END,
                     outcome=COALESCE(excluded.outcome,ghost_signal_history.outcome),
                     review=COALESCE(excluded.review,ghost_signal_history.review),
@@ -1909,7 +1933,7 @@ def sync_signal_history_row(signal_id, db_path=None):
             (item["instrument"], item["signal_id"], item["created_at"], float(item.get("entry_price") or 0.0),
              json.dumps({"SIGNAL_DIRECTION": item["direction"]}), "{}", item["status"], payload,
              item.get("finalized_at"), item.get("settlement_price"),
-             item.get("outcome") if item.get("outcome") in ("WIN", "LOSS", "DRAW") else None))
+             item.get("outcome") if item.get("outcome") in ("WIN", "LOSS", "DRAW", "VOID") else None))
         saved = conn.execute("""SELECT id FROM observations WHERE market='__GHOST_SIGNAL_HISTORY__'
             AND instrument=? AND candle_key=?""", (item["instrument"], item["signal_id"])).fetchone()
     if saved and supabase_cloud_enabled():
@@ -2062,23 +2086,33 @@ def daily_opportunity_state(moment=None, db_path=None):
     with _learning_connect(db_path) as conn:
         used = conn.execute("""SELECT COUNT(*) AS n FROM ghost_signal_history
             WHERE session_date=? AND session_name=?
-            AND status IN ('ENTRY READY','PENDING SETTLEMENT','WIN','LOSS','DRAW')""", (day, session)).fetchone()["n"]
+            AND status IN ('ENTRY READY','PENDING SETTLEMENT','WIN','LOSS','DRAW','VOID')""", (day, session)).fetchone()["n"]
     used = int(used or 0)
     return {"date": day, "session": session, "cap": cap, "used": used,
             "remaining": max(0, cap-used), "allowed": used < cap}
 
 
 def historical_pattern_memory(market, instrument, result, candles=None, db_path=None, neighbours=40):
-    """Find nearest past feature situations for this instrument only; labels are past-only."""
+    """Compare only resolved, same-instrument examples observed before this setup."""
+    result = dict(result or {})
     features = np.asarray(build_learning_features(result, candles), dtype=float)
     init_learning_db(db_path)
+    cutoff_value = result.get("candle_time") or now_cat()
+    try:
+        cutoff = as_cat(cutoff_value).isoformat()
+    except Exception:
+        cutoff = now_cat().isoformat()
     with _learning_connect(db_path) as conn:
         rows = conn.execute("""SELECT features,outcome,observed_at FROM observations
             WHERE market=? AND instrument=? AND outcome IN ('UP','DOWN') AND features IS NOT NULL
             ORDER BY observed_at""", (market, instrument)).fetchall()
     parsed = []
+    cutoff_ts = as_cat(cutoff)
     for row in rows:
         try:
+            observed_ts = as_cat(row["observed_at"])
+            if observed_ts >= cutoff_ts:
+                continue
             x = np.asarray(json.loads(row["features"]), dtype=float)
             if x.size == features.size and np.all(np.isfinite(x)):
                 parsed.append((x, row["outcome"], row["observed_at"]))
@@ -2087,9 +2121,14 @@ def historical_pattern_memory(market, instrument, result, candles=None, db_path=
     report = {"status": "COLLECTING SIMILAR EXAMPLES", "available_examples": len(parsed),
               "similar_examples": 0, "up": 0, "down": 0, "flat": 0,
               "rise_rate": None, "fall_rate": None, "directional_support": None,
-              "nearest_dates": []}
+              "nearest_dates": [], "cutoff": cutoff}
+    candidate = result.get("signal")
+    setup_location = result.get("setup_location", "ZONE")
     if len(parsed) < 20:
         result["historical_memory"] = report
+        if candidate in ("CALL", "PUT") and setup_location == "MID-RANGE":
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "HISTORICAL EVIDENCE INSUFFICIENT",
+                           "reason": f"Mid-range staircase has only {len(parsed)} prior resolved examples. At least 20 comparable historical observations are required."})
         return result
     X = np.vstack([x for x, _, _ in parsed])
     scale = np.nanstd(X, axis=0)
@@ -2097,28 +2136,156 @@ def historical_pattern_memory(market, instrument, result, candles=None, db_path=
     distances = np.sqrt(np.mean(np.square((X-features)/scale), axis=1))
     k = min(int(neighbours), len(parsed))
     idx = np.argsort(distances)[:k]
-    # Weight nearer examples more strongly, while retaining transparent raw counts.
     chosen = [parsed[int(i)] for i in idx]
     ups = sum(y == "UP" for _, y, _ in chosen)
     downs = sum(y == "DOWN" for _, y, _ in chosen)
     total = ups + downs
     rise_rate = ups / total if total else None
     fall_rate = downs / total if total else None
-    candidate = result.get("signal")
     support = rise_rate if candidate == "CALL" else fall_rate if candidate == "PUT" else None
     report.update({"status": "HISTORICAL COMPARISON READY", "similar_examples": total,
                    "up": ups, "down": downs, "rise_rate": rise_rate,
                    "fall_rate": fall_rate, "directional_support": support,
                    "nearest_dates": [chosen[int(i)][2] for i in range(min(5, len(chosen)))]})
     result["historical_memory"] = report
-    # Past similarity is a veto only when the sample is meaningful and clearly adverse.
-    if candidate in ("CALL", "PUT") and total >= 20 and support is not None and support < 0.45:
-        result["signal"] = "WAIT"
-        result["stage"] = "HISTORICAL CONFLICT / WAIT"
-        result["reason"] = (f"Current {candidate} setup resembles {total} past situations, but only "
-                            f"{support:.0%} moved in the predicted direction. Historical evidence vetoes this setup.")
+    if candidate in ("CALL", "PUT") and setup_location == "MID-RANGE":
+        if total < 20 or support is None or support < 0.60:
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "HISTORICAL EVIDENCE WEAK",
+                           "reason": f"Mid-range {candidate} candidate did not meet the evidence threshold: {total} comparable examples, {support:.0%} directional support." if support is not None else "No directional historical evidence for this mid-range setup."})
+    elif candidate in ("CALL", "PUT") and total >= 20 and support is not None and support < 0.45:
+        result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "HISTORICAL CONFLICT / WAIT",
+                       "reason": f"Zone setup resembles {total} prior situations, but only {support:.0%} supported {candidate}. Historical evidence vetoes this candidate."})
     return result
 
+
+def directional_close_outcome(direction, entry_price, expiry_price):
+    """Apply the user's exact RISE-above / FALL-below entry rule."""
+    try:
+        entry_price, expiry_price = float(entry_price), float(expiry_price)
+    except (TypeError, ValueError):
+        return "VOID"
+    if abs(expiry_price-entry_price) <= max(abs(entry_price)*1e-10, 1e-10):
+        return "DRAW"
+    if (direction == "CALL" and expiry_price > entry_price) or (direction == "PUT" and expiry_price < entry_price):
+        return "WIN"
+    if direction in ("CALL", "PUT"):
+        return "LOSS"
+    return "VOID"
+
+
+def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=None, max_bars=600):
+    """Walk-forward OHLC replay of C1/C2/C3 using only data available by C2.
+
+    C3 open is the one-minute entry-price proxy and C3 close is the expiry-price
+    proxy. The live engine uses timestamped ticks; this replay is a historical
+    directional diagnostic, not an exact tick-level contract/payout simulation.
+    """
+    instrument = instrument or GHOST_NAME
+    if candles is None or len(candles) < 80:
+        return {"status": "INSUFFICIENT HISTORY", "bars_tested": 0, "trades": [],
+                "wins": 0, "losses": 0, "draws": 0, "zone_signals": 0, "midrange_signals": 0,
+                "win_rate": None, "note": "At least 80 completed one-minute candles are required."}
+    d = candles.copy()
+    d["datetime"] = pd.to_datetime(d["datetime"], utc=True, errors="coerce")
+    for col in ("open", "high", "low", "close"):
+        d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime", kind="stable")
+    d = d.drop_duplicates(subset=["datetime"], keep="last")
+    # Never include the currently forming candle in a historical replay.
+    d = d[d.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+    d = d.tail(max(80, int(max_bars))).reset_index(drop=True)
+    if len(d) < 80:
+        return {"status": "INSUFFICIENT HISTORY", "bars_tested": len(d), "trades": [],
+                "wins": 0, "losses": 0, "draws": 0, "zone_signals": 0, "midrange_signals": 0,
+                "win_rate": None, "note": "Not enough clean completed candles after timestamp/price validation."}
+
+    trades = []
+    counts = {}
+    stats = {"staircase_confirmations": 0, "zone_or_midrange_candidates": 0,
+             "historical_vetoes": 0, "structural_invalidations": 0, "session_cap_skips": 0}
+    i = 30
+    while i < len(d)-2:
+        c1, previous, c2, c3 = d.iloc[i], d.iloc[i-1], d.iloc[i+1], d.iloc[i+2]
+        direction, pattern = identify_candle_one(c1, previous)
+        if direction not in ("CALL", "PUT"):
+            i += 1
+            continue
+        c1_close = float(c1.close)
+        c2_close = float(c2.close)
+        c2_confirmed = c2_close > c1_close if direction == "CALL" else c2_close < c1_close
+        if not c2_confirmed:
+            i += 1
+            continue
+        stats["staircase_confirmations"] += 1
+        # OHLC replay cannot reproduce the exact second-by-second 45s check,
+        # but it can conservatively detect any C2 break of the C1 swing extreme.
+        c2_hard_break = (float(c2.low) < float(c1.low)) if direction == "CALL" else (float(c2.high) > float(c1.high))
+        if c2_hard_break:
+            stats["structural_invalidations"] += 1
+            i += 1
+            continue
+        # Only candles up to C1 plus the developing C2 candle are supplied to
+        # the decision engine. No C3/open/close data leak into setup selection.
+        context = d.iloc[max(0, i-239):i+1].copy().reset_index(drop=True)
+        base = {"signal": "WAIT", "stage": "SETUP DEVELOPING", "candidate_direction": direction,
+                "price": c2_close, "candle_time": pd.Timestamp(c2.datetime),
+                "candle1_time": pd.Timestamp(c1.datetime), "c1_close": c1_close,
+                "c1_high": float(c1.high), "c1_low": float(c1.low),
+                "staircase_reference": c1_close, "entry_point": c1_close,
+                "pattern": pattern, "reason": "Walk-forward C1/C2 confirmation replay."}
+        fused = four_brain_decision(context, base, learned_weights=None,
+                                    structure_candles=aggregate_timeframe(context, 5),
+                                    forming_candle=c2.to_dict())
+        if fused.get("signal") != direction:
+            i += 1
+            continue
+        stats["zone_or_midrange_candidates"] += 1
+        # Match the live historical-memory cutoff to C2's candle start. Only
+        # resolved observations strictly before this setup can be neighbours.
+        fused["candle_time"] = pd.Timestamp(c2.datetime)
+        history_checked = historical_pattern_memory(market, instrument, fused, context, db_path=db_path)
+        if history_checked.get("signal") != direction:
+            stats["historical_vetoes"] += 1
+            i += 1
+            continue
+        entry_time = pd.Timestamp(c3.datetime)
+        day, session, cap = cat_session_info(entry_time)
+        if cap <= 0:
+            i += 1
+            continue
+        count_key = (day, session)
+        used = counts.get(count_key, 0)
+        if used >= cap:
+            stats["session_cap_skips"] += 1
+            i += 1
+            continue
+        entry_price = float(c3.open)
+        expiry_price = float(c3.close)
+        outcome = directional_close_outcome(direction, entry_price, expiry_price)
+        move = expiry_price-entry_price
+        directional_move = move if direction == "CALL" else -move
+        trades.append({"Entry CAT": as_cat(entry_time).strftime("%Y-%m-%d %H:%M:%S"),
+                       "Setup": history_checked.get("setup_location", "ZONE"),
+                       "Direction": direction, "Entry proxy": entry_price,
+                       "Expiry close": expiry_price, "Directional move": directional_move,
+                       "Outcome": outcome, "Historical support": (history_checked.get("historical_memory") or {}).get("directional_support")})
+        counts[count_key] = used + 1
+        # The next setup may begin only after this C3 entry candle has finished.
+        i += 3
+
+    wins = sum(t["Outcome"] == "WIN" for t in trades)
+    losses = sum(t["Outcome"] == "LOSS" for t in trades)
+    draws = sum(t["Outcome"] == "DRAW" for t in trades)
+    settled = wins + losses
+    return {"status": "COMPLETED", "bars_tested": len(d), "start": d.datetime.iloc[0].isoformat(),
+            "end": d.datetime.iloc[-1].isoformat(), "trades": trades,
+            "total_signals": len(trades), "wins": wins, "losses": losses, "draws": draws,
+            "zone_signals": sum(t["Setup"] == "ZONE" for t in trades),
+            "midrange_signals": sum(t["Setup"] == "MID-RANGE" for t in trades),
+            "win_rate": wins/settled if settled else None,
+            "average_directional_move": float(np.mean([t["Directional move"] for t in trades])) if trades else None,
+            "diagnostics": stats,
+            "note": "OHLC walk-forward proxy: C3 open approximates entry and C3 close approximates one-minute expiry. Setup selection uses only completed candles through C2 and prior resolved learning observations; current trained model weights and the live trade-risk journal are intentionally excluded to avoid future-data leakage. This is not a tick-exact or payout-adjusted profitability test. OHLC cannot reproduce the exact 45-second intrabar check; C2 high/low are used conservatively to flag any break of the C1 swing extreme."}
 
 def persist_signal_history(signal, *, status=None, entry_price=None, db_path=None):
     if not signal or not signal.get("signal_id"):
@@ -2149,13 +2316,17 @@ def persist_signal_history(signal, *, status=None, entry_price=None, db_path=Non
         entry_value = None
     with _learning_connect(db_path) as conn:
         existing = conn.execute("SELECT status,entry_price FROM ghost_signal_history WHERE signal_id=?", (signal_id,)).fetchone()
+        changed = False
         if existing:
-            # Direction, identity and original evidence are immutable. Only lifecycle fields advance.
-            if existing["status"] not in ("WIN", "LOSS", "DRAW", "CANCELLED", "MISSED"):
-                conn.execute("""UPDATE ghost_signal_history SET status=?,
-                    entry_price=CASE WHEN ?='ENTRY READY' THEN COALESCE(?,entry_price) ELSE entry_price END,
-                    reason=? WHERE signal_id=?""",
-                    (stage_status, stage_status, entry_value, str(signal.get("reason", ""))[:1200], signal_id))
+            # Direction, identity, scheduled time, original evidence and reason are immutable.
+            # Only lifecycle status and the first actual entry quote may advance.
+            if existing["status"] not in ("WIN", "LOSS", "DRAW", "VOID", "CANCELLED", "MISSED"):
+                if existing["status"] != stage_status or (stage_status == "ENTRY READY" and existing["entry_price"] is None and entry_value is not None):
+                    conn.execute("""UPDATE ghost_signal_history SET status=?,
+                        entry_price=CASE WHEN ?='ENTRY READY' THEN COALESCE(entry_price,?) ELSE entry_price END
+                        WHERE signal_id=?""",
+                        (stage_status, stage_status, entry_value, signal_id))
+                    changed = True
         else:
             conn.execute("""INSERT OR IGNORE INTO ghost_signal_history
                 (signal_id,signal_key,session_date,session_name,market,instrument,direction,zone_id,
@@ -2166,7 +2337,9 @@ def persist_signal_history(signal, *, status=None, entry_price=None, db_path=Non
                  created, str(signal.get("entry_time", created)), str(signal.get("expiry_time", created)),
                  entry_value, stage_status, str(signal.get("reason", ""))[:1200],
                  json.dumps(evidence, default=str), json.dumps(features) if features is not None else None))
-    sync_signal_history_row(signal_id, db_path)
+            changed = True
+    if changed:
+        sync_signal_history_row(signal_id, db_path)
     return True
 
 
@@ -2176,7 +2349,7 @@ def close_signal_history(signal_id, status, *, settlement_price=None, outcome=No
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
         row = conn.execute("SELECT status FROM ghost_signal_history WHERE signal_id=?", (str(signal_id),)).fetchone()
-        if not row or row["status"] in ("WIN", "LOSS", "DRAW", "CANCELLED", "MISSED"):
+        if not row or row["status"] in ("WIN", "LOSS", "DRAW", "VOID", "CANCELLED", "MISSED"):
             return False
         if row["status"] == "ENTRY READY" and status in ("CANCELLED", "MISSED"):
             return False
@@ -2186,16 +2359,27 @@ def close_signal_history(signal_id, status, *, settlement_price=None, outcome=No
     return True
 
 
-def resolve_signal_history(market, instrument, current_price, now=None, db_path=None):
-    """Settle GHOST's prediction against the same live instrument quote; not the user's trade."""
+def resolve_signal_history(market, instrument, current_price, now=None, db_path=None,
+                           price_history=None, max_expiry_tick_gap=3.0):
+    """Settle against the closest reliable Deriv tick at expiry, not a later screen quote."""
+    fallback_price = None
     try:
-        price = float(current_price)
+        fallback_price = float(current_price)
     except (TypeError, ValueError):
-        return 0
+        pass
     now_dt = as_cat(now or now_cat()).to_pydatetime()
     init_learning_db(db_path)
     changed = 0
     changed_ids = []
+    history = None
+    if price_history is not None:
+        try:
+            history = price_history.copy()
+            history["datetime"] = pd.to_datetime(history["datetime"], utc=True, errors="coerce")
+            history["close"] = pd.to_numeric(history["close"], errors="coerce")
+            history = history.dropna(subset=["datetime", "close"]).sort_values("datetime", kind="stable")
+        except Exception:
+            history = pd.DataFrame(columns=["datetime", "close"])
     with _learning_connect(db_path) as conn:
         stale_preparations = conn.execute("""SELECT signal_id,entry_time FROM ghost_signal_history
             WHERE market=? AND instrument=? AND status='PREPARED'""", (market, instrument)).fetchall()
@@ -2219,17 +2403,41 @@ def resolve_signal_history(market, instrument, current_price, now=None, db_path=
                 continue
             if now_dt < expiry or row["entry_price"] is None:
                 continue
-            entry = float(row["entry_price"])
-            if abs(price-entry) <= max(abs(entry)*1e-10, 1e-10):
-                outcome = "DRAW"
-            elif (row["direction"] == "CALL" and price > entry) or (row["direction"] == "PUT" and price < entry):
-                outcome = "WIN"
+            settlement = None
+            quote_time = None
+            if history is not None:
+                expiry_utc = pd.Timestamp(expiry).tz_convert("UTC")
+                before = history[history.datetime <= expiry_utc]
+                if not before.empty:
+                    tick = before.iloc[-1]
+                    gap = (expiry_utc - tick.datetime).total_seconds()
+                    if 0 <= gap <= float(max_expiry_tick_gap):
+                        settlement = float(tick.close)
+                        quote_time = tick.datetime.isoformat()
+                if settlement is None:
+                    after = history[history.datetime > expiry_utc]
+                    if not after.empty:
+                        tick = after.iloc[0]
+                        gap = (tick.datetime - expiry_utc).total_seconds()
+                        if 0 <= gap <= 1.0:
+                            settlement = float(tick.close)
+                            quote_time = tick.datetime.isoformat()
             else:
-                outcome = "LOSS"
-            review = f"GHOST prediction check: entry quote {entry:.8f}; expiry quote {price:.8f}; direction {row['direction']}. This evaluates the model prediction, not a user-executed contract."
+                # Backward-compatible path for offline tests/manual evaluation.
+                settlement = fallback_price
+                quote_time = "current quote fallback (no tick history supplied)"
+            entry = float(row["entry_price"])
+            if settlement is None:
+                outcome = "VOID"
+                review = (f"VOID: no reliable Deriv tick within {float(max_expiry_tick_gap):.1f}s of scheduled expiry. "
+                          f"No later screen price was substituted. Entry quote {entry:.8f}.")
+            else:
+                outcome = directional_close_outcome(row["direction"], entry, settlement)
+                review = f"GHOST prediction check: entry {entry:.8f}; expiry quote {settlement:.8f} at {quote_time}; direction {row['direction']}. {outcome}."
+            review += " This evaluates GHOST's prediction, not a user-executed contract."
             conn.execute("""UPDATE ghost_signal_history SET status=?,outcome=?,settlement_price=?,review=?,finalized_at=?
                 WHERE signal_id=? AND status='ENTRY READY'""",
-                (outcome, outcome, price, review, now_dt.isoformat(), row["signal_id"]))
+                (outcome, outcome, settlement, review, now_dt.isoformat(), row["signal_id"]))
             changed += 1
             changed_ids.append(str(row["signal_id"]))
     for signal_id in changed_ids:
@@ -2245,7 +2453,9 @@ def signal_history_summary(db_path=None, limit=30):
             SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN status='DRAW' THEN 1 ELSE 0 END) AS draws,
-            SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) AS cancelled
+            SUM(CASE WHEN status='VOID' THEN 1 ELSE 0 END) AS voids,
+            SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) AS cancelled,
+            SUM(CASE WHEN status='MISSED' THEN 1 ELSE 0 END) AS missed
             FROM ghost_signal_history""").fetchone()
     return [dict(r) for r in rows], dict(totals)
 
@@ -2273,79 +2483,335 @@ def signal_history_export_bytes(db_path=None):
     return out.getvalue().encode("utf-8")
 
 
-def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60):
-    """Prepare a future entry at least prep_seconds ahead, then verify at entry."""
+def apply_preparation_gate_forex(result, market, instrument, expiry=1, prep_seconds=60):
+    """Retain the 4.7 preparation workflow for the optional Twelve Data Forex engine."""
     result = dict(result or {})
     pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
     key = f"{market}|{instrument}"
     now_utc = pd.Timestamp.now(tz="UTC")
     candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
-    if result.get("stage") in ("FEED CHECK", "INVALIDATED", "RISK PAUSE", "AI DISAGREEMENT / WAIT", "HISTORICAL CONFLICT / WAIT") or candidate is None:
-        old_pending = pending_all.pop(key, None)
-        if old_pending and old_pending.get("signal_id") and not old_pending.get("entry_issued", False):
-            close_signal_history(old_pending["signal_id"], "CANCELLED", review=result.get("reason", "Setup invalidated before entry."))
+    if candidate is None:
+        old = pending_all.pop(key, None)
+        if old and old.get("signal_id") and not old.get("entry_issued", False):
+            close_signal_history(old["signal_id"], "CANCELLED", review=result.get("reason", "Forex setup invalidated."))
         return result
-
     zone_id = str(result.get("zone_id") or f"{candidate}|{result.get('candle_time', '')}")
     pending = pending_all.get(key)
-    same_candidate = pending and pending.get("direction") == candidate and pending.get("zone_id") == zone_id
-    if same_candidate:
-        entry_utc = pd.Timestamp(pending["entry_time"])
-        if entry_utc.tzinfo is None:
-            entry_utc = entry_utc.tz_localize("UTC")
-    else:
+    if not pending or pending.get("direction") != candidate or pending.get("zone_id") != zone_id:
         if pending and pending.get("signal_id") and not pending.get("entry_issued", False):
-            close_signal_history(pending["signal_id"], "CANCELLED", review="Candidate direction or zone changed before entry; a new setup identity was created.")
-        # Stronger zone reactions can target the next minute; developing
-        # reactions get two minutes for another candle of evidence.
-        evidence_score = float((result.get("fusion") or {}).get("total_score", 0) or 0)
-        adaptive_lead = 60 if evidence_score >= 3.5 else 120
-        required_notice = max(int(prep_seconds), adaptive_lead)
-        earliest = now_utc + pd.Timedelta(seconds=required_notice)
-        next_boundary = now_utc.floor("min") + pd.Timedelta(minutes=1)
-        if (next_boundary - now_utc).total_seconds() < required_notice:
-            next_boundary = earliest.ceil("min")
-        entry_utc = next_boundary
-        pending = {"direction": candidate, "zone_id": zone_id,
-                   "entry_time": entry_utc.isoformat(), "created_at": now_utc.isoformat(),
+            close_signal_history(pending["signal_id"], "CANCELLED", review="Forex candidate changed before entry.")
+        entry_utc = (now_utc + pd.Timedelta(seconds=max(60, int(prep_seconds)))).ceil("min")
+        pending = {"direction": candidate, "zone_id": zone_id, "entry_time": entry_utc.isoformat(),
                    "entry_issued": False, "signal_id": str(uuid.uuid4())}
         pending_all[key] = pending
-
-    seconds_to_entry = (entry_utc - now_utc).total_seconds()
+    entry_utc = pd.Timestamp(pending["entry_time"])
+    if entry_utc.tzinfo is None: entry_utc = entry_utc.tz_localize("UTC")
+    seconds = (entry_utc-now_utc).total_seconds()
     quota = daily_opportunity_state(as_cat(entry_utc).to_pydatetime())
     if not quota["allowed"]:
         pending_all.pop(key, None)
-        if pending and pending.get("signal_id") and not pending.get("entry_issued", False):
-            close_signal_history(pending["signal_id"], "CANCELLED", review="The scheduled-entry session opportunity cap was reached before entry.")
-        result.update({"signal": "WAIT", "stage": "SESSION CAP",
-                       "reason": f"{quota['session']} session limit reached ({quota['used']}/{quota['cap']}). GHOST will not create extra signals."})
+        result.update({"signal":"WAIT","stage":"SESSION CAP","reason":f"{quota['session']} session limit reached."})
         return result
-    result["candidate_direction"] = candidate
-    result["signal_id"] = pending.get("signal_id")
-    result["zone_id"] = zone_id
-    result["scheduled_entry_time"] = as_cat(entry_utc).to_pydatetime()
-    result["entry_time"] = as_cat(entry_utc).to_pydatetime()
-    result["preparation_seconds"] = max(0, int(seconds_to_entry))
-    result["entry_notice_rule"] = "Minimum 60 seconds; developing reactions receive a 120-second preparation window."
-    if seconds_to_entry > 0:
-        result.update({"signal": "WAIT", "stage": "PREPARE",
-                       "reason": f"{candidate} opportunity prepared for {as_cat(entry_utc).strftime('%H:%M:%S')} CAT. Market will be rechecked before entry."})
+    result.update({"candidate_direction":candidate,"signal_id":pending["signal_id"],"zone_id":zone_id,
+                   "entry_time":as_cat(entry_utc).to_pydatetime(),"preparation_seconds":max(0,int(seconds))})
+    if seconds > 0:
+        result.update({"signal":"WAIT","stage":"PREPARE","reason":f"Forex candidate prepared for {as_cat(entry_utc).strftime('%H:%M:%S')} CAT."})
+    elif seconds >= -15 and not pending.get("entry_issued"):
+        pending["entry_issued"] = True; pending_all[key] = pending
+        result.update({"signal":candidate,"stage":"ENTRY READY","entry_point":float(result.get("price"))})
+    else:
+        pending_all.pop(key,None)
+        result.update({"signal":"WAIT","stage":"MISSED ENTRY WINDOW","reason":"Forex entry window passed."})
+    return result
+
+
+def validate_locked_setup(pending, candles=None, forming_candle=None, live_price=None,
+                          now=None, feed_ok=True):
+    """Validate a locked C1/C2 setup without treating a small retracement as failure."""
+    if not feed_ok:
+        return {"state": "INVALID", "reason": "Deriv feed is stale or unavailable; entry cannot be verified."}
+    direction = pending.get("direction")
+    if direction not in ("CALL", "PUT"):
+        return {"state": "INVALID", "reason": "Locked signal has no valid direction."}
+    try:
+        c1_close = float(pending["c1_close"])
+        c1_high = float(pending["c1_high"])
+        c1_low = float(pending["c1_low"])
+        c1_time = pd.Timestamp(pending["c1_time"])
+        if c1_time.tzinfo is None:
+            c1_time = c1_time.tz_localize("UTC")
+        c2_time = c1_time + pd.Timedelta(minutes=1)
+    except Exception:
+        return {"state": "WAIT", "reason": "Waiting for the locked C1 reference to be available."}
+    now_ts = pd.Timestamp(now or datetime.now(TZ))
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.tz_localize(TZ)
+    now_utc = now_ts.tz_convert("UTC")
+    price = None
+    try:
+        price = float(live_price) if live_price is not None else None
+    except (TypeError, ValueError):
+        price = None
+    # During the developing C2 candle, only a decisive break of the C1 swing
+    # extreme invalidates immediately. A small pullback around C1 close is allowed.
+    if price is not None:
+        if direction == "CALL" and price < c1_low:
+            return {"state": "INVALID", "reason": "Price broke below the C1 swing low; bullish staircase integrity failed."}
+        if direction == "PUT" and price > c1_high:
+            return {"state": "INVALID", "reason": "Price broke above the C1 swing high; bearish staircase integrity failed."}
+    c2 = None
+    if candles is not None and len(candles):
+        d = candles.copy()
+        d["datetime"] = pd.to_datetime(d["datetime"], utc=True, errors="coerce")
+        rows = d[d.datetime == c2_time]
+        if not rows.empty:
+            c2 = rows.iloc[-1]
+    if c2 is None and forming_candle is not None:
+        try:
+            f = pd.Series(forming_candle)
+            ftime = pd.to_datetime(f.get("datetime"), utc=True)
+            if ftime == c2_time:
+                # It is still forming; never call its close final.
+                return {"state": "PREPARING", "reason": "C2 is still forming; small retracements are tolerated until its close."}
+        except Exception:
+            pass
+    if c2 is None:
+        if now_utc < c2_time + pd.Timedelta(minutes=1):
+            return {"state": "PREPARING", "reason": "Waiting for the confirmation candle to close."}
+        return {"state": "INVALID", "reason": "The confirmation candle is unavailable at the scheduled entry; no unverified entry will be issued."}
+    c2_close = float(c2.close)
+    confirmed = c2_close > c1_close if direction == "CALL" else c2_close < c1_close
+    if not confirmed:
+        return {"state": "INVALID", "reason": f"C2 closed on the wrong side of the C1 reference ({c1_close:.5f}); staircase confirmation failed."}
+    # After C2 close, allow ordinary pullbacks as long as the C1 swing extreme
+    # is intact. Entry quote itself is captured once at ENTRY READY.
+    return {"state": "VALID", "reason": "C2 close confirms the staircase; C1 swing structure remains intact."}
+
+
+def restore_pending_signal(market, instrument, db_path=None):
+    """Recover a still-preparing locked signal after a Streamlit session restart."""
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        row = conn.execute("""SELECT * FROM ghost_signal_history
+            WHERE market=? AND instrument=? AND status='PREPARED'
+            ORDER BY created_at DESC LIMIT 1""", (market, instrument)).fetchone()
+    if not row:
+        return None
+    try:
+        evidence = json.loads(row["evidence"] or "{}")
+    except Exception:
+        evidence = {}
+    meta = evidence.get("locked_setup", {}) if isinstance(evidence, dict) else {}
+    required = ("c1_time", "c1_close", "c1_high", "c1_low", "c2_time")
+    if any(meta.get(k) is None for k in required):
+        close_signal_history(row["signal_id"], "MISSED",
+            review="Legacy PREPARED record cannot be resumed because it lacks the locked C1/C2 evidence required by GHOST 4.8.",
+            db_path=db_path)
+        return None
+    try:
+        if as_cat(row["entry_time"]).to_pydatetime() + timedelta(seconds=15) < now_cat():
+            close_signal_history(row["signal_id"], "MISSED", review="App restarted after the scheduled preparation/entry window.", db_path=db_path)
+            return None
+    except Exception:
+        return None
+    return {"direction": row["direction"], "zone_id": row["zone_id"], "signal_id": row["signal_id"],
+            "signal_key": row["signal_key"], "entry_time": row["entry_time"],
+            "c1_time": meta["c1_time"], "c2_time": meta["c2_time"],
+            "c1_close": float(meta["c1_close"]), "c1_high": float(meta["c1_high"]),
+            "c1_low": float(meta["c1_low"]), "setup_location": meta.get("setup_location", "ZONE"),
+            "entry_issued": False, "critical_check_done": bool(meta.get("critical_check_done", False)),
+            "evidence": evidence}
+
+
+def update_signal_evidence(signal_id, evidence, db_path=None):
+    """Persist a one-time critical preparation check without changing signal identity."""
+    if not signal_id:
+        return False
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        conn.execute("UPDATE ghost_signal_history SET evidence=? WHERE signal_id=? AND status='PREPARED'",
+                     (json.dumps(evidence, default=str), str(signal_id)))
+    sync_signal_history_row(str(signal_id), db_path)
+    return True
+
+
+def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60,
+                           candles=None, forming_candle=None):
+    """One-candle preparation, immutable signal lock, 45s integrity check."""
+    result = dict(result or {})
+    if market != "GHOST PROTOCOL":
+        return apply_preparation_gate_forex(result, market, instrument, expiry, prep_seconds)
+    pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
+    key = f"{market}|{instrument}"
+    now_utc = pd.Timestamp.now(tz="UTC")
+    now_local = now_cat()
+    pending = pending_all.get(key)
+    if pending is None:
+        pending = restore_pending_signal(market, instrument)
+        if pending:
+            pending_all[key] = pending
+            st.session_state["ghost_last_setup_key"] = pending.get("signal_key")
+    price = result.get("price")
+    candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
+
+    if pending:
+        # Once a signal is locked, a later WAIT or different candidate does not
+        # silently replace it. Only explicit feed/structure invalidation can.
+        entry_utc = pd.Timestamp(pending["entry_time"])
+        if entry_utc.tzinfo is None:
+            entry_utc = entry_utc.tz_localize("UTC")
+        seconds_to_entry = (entry_utc - now_utc).total_seconds()
+        if pending.get("entry_issued"):
+            if seconds_to_entry >= -15:
+                result.update({"signal": pending["direction"], "candidate_direction": pending["direction"],
+                               "signal_id": pending["signal_id"], "signal_key": pending.get("signal_key"),
+                               "zone_id": pending.get("zone_id"), "stage": "ENTRY READY",
+                               "entry_time": entry_utc.to_pydatetime(),
+                               "entry_point": float(pending.get("entry_price")),
+                               "entry_reference_price": float(pending.get("entry_price")),
+                               "staircase_reference": pending.get("c1_close"),
+                               "reason": f"LOCKED {pending['direction']} ENTRY · reference {float(pending.get('entry_price')):.5f}. Original prediction is unchanged.",
+                               "locked_signal": True, "critical_check_done": bool(pending.get("critical_check_done"))})
+                return result
+            pending_all.pop(key, None)
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "ENTRY WINDOW CLOSED",
+                           "reason": "The original signal's 15-second entry window has closed. Its prediction remains in permanent history; no duplicate."})
+            return result
+        if result.get("stage") == "FEED CHECK":
+            validity = {"state": "INVALID", "reason": "Deriv feed became stale during preparation."}
+        else:
+            validity = validate_locked_setup(pending, candles, forming_candle, price, now_local, feed_ok=True)
+        c2_start = pd.Timestamp(pending.get("c2_time", entry_utc - pd.Timedelta(minutes=1)))
+        if c2_start.tzinfo is None:
+            c2_start = c2_start.tz_localize("UTC")
+        c2_age = (now_utc - c2_start).total_seconds()
+        # The critical check is deliberately at ~45 seconds into C2, leaving
+        # about 15 seconds before its close/next-candle entry.
+        critical_due = c2_age >= 45.0
+        if validity["state"] == "INVALID":
+            close_signal_history(pending.get("signal_id"), "CANCELLED", review=validity["reason"])
+            pending_all.pop(key, None)
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "INVALIDATED",
+                           "reason": "LOCKED SIGNAL CANCELLED · " + validity["reason"]})
+            return result
+        if critical_due and not pending.get("critical_check_done"):
+            pending["critical_check_done"] = True
+            pending["critical_check_at"] = now_local.isoformat()
+            pending["critical_check_state"] = validity["state"]
+            pending["critical_check_reason"] = validity["reason"]
+            pending_all[key] = pending
+            evidence = dict(pending.get("evidence") or {})
+            evidence["locked_setup"] = {k: pending.get(k) for k in
+                ("c1_time", "c1_close", "c1_high", "c1_low", "c2_time", "setup_location",
+                 "critical_check_done", "critical_check_at", "critical_check_state", "critical_check_reason")}
+            pending["evidence"] = evidence
+            update_signal_evidence(pending.get("signal_id"), evidence)
+        if seconds_to_entry > 0:
+            direction = pending["direction"]
+            result.update({"signal": "WAIT", "candidate_direction": direction, "signal_id": pending["signal_id"],
+                           "zone_id": pending.get("zone_id"), "stage": "PREPARE",
+                           "entry_time": entry_utc.to_pydatetime(), "scheduled_entry_time": entry_utc.to_pydatetime(),
+                           "preparation_seconds": max(0, int(seconds_to_entry)),
+                           "entry_point": pending.get("c1_close"), "staircase_reference": pending.get("c1_close"),
+                           "reason": f"PREPARING {direction} · one confirmation candle · " + ("45-second integrity check passed; final 15-second watch." if critical_due else "monitoring the developing confirmation candle."),
+                           "locked_signal": True, "critical_check_done": bool(pending.get("critical_check_done")),
+                           "signal_key": pending.get("signal_key"), "evidence": pending.get("evidence")})
+            return result
+        # At the next candle boundary, C2 must be a completed candle and valid.
+        if validity["state"] != "VALID":
+            # Give the feed/aggregation a short grace period, but never beyond
+            # the 15-second entry window.
+            if seconds_to_entry >= -15:
+                result.update({"signal": "WAIT", "candidate_direction": pending["direction"],
+                               "signal_id": pending["signal_id"], "stage": "FINAL CONFIRMATION CHECK",
+                               "reason": "Waiting for Deriv to publish the completed C2 candle. Do not enter yet."})
+                return result
+            close_signal_history(pending.get("signal_id"), "MISSED", review="C2 close was not available in the 15-second entry window.")
+            pending_all.pop(key, None)
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "MISSED ENTRY WINDOW",
+                           "reason": "Completed confirmation candle was unavailable; no late entry."})
+            return result
+        if seconds_to_entry >= -15 and not pending.get("entry_issued", False):
+            if price is None:
+                result.update({"signal": "WAIT", "candidate_direction": pending["direction"], "stage": "FINAL CONFIRMATION CHECK",
+                               "reason": "Live entry quote unavailable; do not enter."})
+                return result
+            pending["entry_issued"] = True
+            pending["entry_price"] = float(price)
+            pending["entry_issued_at"] = now_local.isoformat()
+            pending_all[key] = pending
+            result.update({"signal": pending["direction"], "candidate_direction": pending["direction"],
+                           "signal_id": pending["signal_id"], "zone_id": pending.get("zone_id"),
+                           "stage": "ENTRY READY", "entry_time": entry_utc.to_pydatetime(),
+                           "entry_point": float(price), "entry_reference_price": float(price),
+                           "staircase_reference": pending.get("c1_close"),
+                           "reason": f"CONFIRMED {pending['direction']} · C2 closed correctly · actual entry reference {float(price):.5f}. Manual entry only.",
+                           "locked_signal": True, "critical_check_done": bool(pending.get("critical_check_done")),
+                           "signal_key": pending.get("signal_key"), "evidence": pending.get("evidence")})
+            return result
+        if pending.get("entry_issued"):
+            pending_all.pop(key, None)
+            result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "ENTRY WINDOW CLOSED",
+                           "reason": "The original signal was already issued. Its direction and entry reference remain in permanent history; no duplicate signal."})
+            return result
+        close_signal_history(pending.get("signal_id"), "MISSED", review="The 15-second entry window passed without a valid entry quote.")
+        pending_all.pop(key, None)
+        result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "MISSED ENTRY WINDOW",
+                       "reason": "The scheduled entry window passed. Waiting for a fresh Three-Step setup."})
         return result
 
-    elapsed = abs(seconds_to_entry)
-    if elapsed <= 15:
-        if not pending.get("entry_issued", False):
-            pending["entry_issued"] = True
-            pending_all[key] = pending
-        result.update({"signal": candidate, "stage": "ENTRY READY",
-                       "entry_point": float(result.get("price")) if result.get("price") is not None else result.get("entry_point"),
-                       "reason": f"Scheduled {candidate} entry time reached at {as_cat(entry_utc).strftime('%H:%M:%S')} CAT. Conditions rechecked; manual entry only."})
+    # No pending setup: only begin preparation while C2 is actually forming.
+    if candidate not in ("CALL", "PUT") or result.get("staircase_stage") != "SETUP DEVELOPING":
         return result
-    pending_all.pop(key, None)
-    if pending.get("signal_id") and not pending.get("entry_issued", False):
-        close_signal_history(pending["signal_id"], "MISSED", review="The 15-second scheduled entry window passed without an issued entry.")
-    result.update({"signal": "WAIT", "stage": "MISSED ENTRY WINDOW",
-                   "reason": "The scheduled entry window passed. GHOST will wait for a fresh zone opportunity rather than issue a late signal."})
+    setup_key = f"{market}|{instrument}|{candidate}|{result.get('candle1_time')}|{result.get('zone_id')}"
+    last_key = st.session_state.get("ghost_last_setup_key")
+    if setup_key == last_key:
+        result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "SETUP ALREADY PROCESSED",
+                       "reason": "This Three-Step setup has already produced a signal or cancellation. No duplicate."})
+        return result
+    try:
+        c1_time = pd.Timestamp(result.get("candle1_time"))
+        if c1_time.tzinfo is None:
+            c1_time = c1_time.tz_localize("UTC")
+        c2_time = c1_time + pd.Timedelta(minutes=1)
+        entry_utc = c2_time + pd.Timedelta(minutes=1)
+        c1_close = float(result.get("c1_close", result.get("staircase_reference", result.get("entry_point"))))
+        c1_high = float(result.get("c1_high"))
+        c1_low = float(result.get("c1_low"))
+    except Exception:
+        result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "PREPARATION DATA MISSING",
+                       "reason": "GHOST cannot lock the setup because its C1 reference data are incomplete."})
+        return result
+    quota = daily_opportunity_state(as_cat(entry_utc).to_pydatetime())
+    if not quota["allowed"]:
+        result.update({"signal": "WAIT", "candidate_direction": "WAIT", "stage": "SESSION CAP",
+                       "reason": f"{quota['session']} session cap reached ({quota['used']}/{quota['cap']}). No quota-filling signals."})
+        return result
+    signal_id = str(uuid.uuid4())
+    pending = {"direction": candidate, "zone_id": str(result.get("zone_id") or setup_key),
+               "setup_location": result.get("setup_location", "ZONE"), "signal_id": signal_id,
+               "signal_key": setup_key, "entry_time": entry_utc.isoformat(),
+               "c2_time": c2_time.isoformat(), "c1_time": c1_time.isoformat(),
+               "c1_close": c1_close, "c1_high": c1_high, "c1_low": c1_low,
+               "created_at": now_local.isoformat(), "entry_issued": False,
+               "critical_check_done": False, "reason": result.get("reason", ""),
+               "evidence": {"zone_analysis": result.get("zone_analysis"), "brains": result.get("brains"),
+                            "market_regime": result.get("market_regime"), "historical_memory": result.get("historical_memory"),
+                            "setup_location": result.get("setup_location"),
+                            "locked_setup": {"c1_time": c1_time.isoformat(), "c1_close": c1_close,
+                                             "c1_high": c1_high, "c1_low": c1_low,
+                                             "c2_time": c2_time.isoformat(), "setup_location": result.get("setup_location"),
+                                             "critical_check_done": False}}}
+    pending_all[key] = pending
+    st.session_state["ghost_last_setup_key"] = setup_key
+    result.update({"signal": "WAIT", "candidate_direction": candidate, "signal_id": signal_id,
+                   "zone_id": pending["zone_id"], "stage": "PREPARE",
+                   "entry_time": entry_utc.to_pydatetime(), "scheduled_entry_time": entry_utc.to_pydatetime(),
+                   "preparation_seconds": max(0, int((entry_utc-pd.Timestamp.now(tz="UTC")).total_seconds())),
+                   "entry_point": c1_close, "staircase_reference": c1_close, "signal_key": setup_key,
+                   "evidence": pending["evidence"],
+                   "reason": f"PREPARING {candidate} · one confirmation candle · next-candle entry if C2 closes beyond C1.",
+                   "locked_signal": True, "critical_check_done": False})
     return result
 
 def build_signal_record(market, instrument, result, expiry=1):
@@ -2369,6 +2835,10 @@ def build_signal_record(market, instrument, result, expiry=1):
         "candle_time": as_cat(result["candle_time"]).isoformat(),
         "candle1_time": str(result.get("candle1_time", "")),
         "reference_price": result.get("price"),
+        "signal_key": result.get("signal_key"),
+        "evidence": result.get("evidence"),
+        "c1_close": result.get("c1_close", result.get("staircase_reference", result.get("entry_point"))),
+        "c1_high": result.get("c1_high"), "c1_low": result.get("c1_low"),
         "entry_time": entry.isoformat(),
         "expiry_time": expiration.isoformat(),
         "expiry_minutes": expiry,
@@ -2395,6 +2865,10 @@ def build_preparation_record(market, instrument, result, expiry=1):
         "candle_time": as_cat(result.get("candle_time", created)).isoformat(),
         "candle1_time": str(result.get("candle1_time", "")),
         "reference_price": result.get("price"),
+        "signal_key": result.get("signal_key"),
+        "evidence": result.get("evidence"),
+        "c1_close": result.get("c1_close", result.get("staircase_reference", result.get("entry_point"))),
+        "c1_high": result.get("c1_high"), "c1_low": result.get("c1_low"),
         "entry_time": entry.isoformat(),
         "expiry_time": (entry + timedelta(minutes=expiry)).isoformat(),
         "expiry_minutes": expiry, "status": "PREPARATION"
@@ -2404,7 +2878,7 @@ def build_preparation_record(market, instrument, result, expiry=1):
 def show_signal_pad(signal):
     """Prominent prepared/actionable signal with exact CAT entry clock."""
     if not signal:
-        st.markdown("<div class='signal-card signal-wait'><h2>SCANNING ZONES</h2><div class='small-muted'>Monitoring support, resistance and live market reaction. No qualified entry is prepared yet.</div></div>", unsafe_allow_html=True)
+        st.markdown("<div class='signal-card signal-wait'><h2>WAITING FOR A QUALIFIED SETUP</h2><div class='small-muted'>GHOST is monitoring price action. A signal will appear only when the Three-Step structure and evidence qualify.</div></div>", unsafe_allow_html=True)
         return
     now = now_cat()
     entry = datetime.fromisoformat(signal["entry_time"])
@@ -2412,7 +2886,7 @@ def show_signal_pad(signal):
     if entry.tzinfo is None: entry = entry.replace(tzinfo=TZ)
     if expiry.tzinfo is None: expiry = expiry.replace(tzinfo=TZ)
     if now >= expiry:
-        st.markdown("<div class='signal-card signal-wait'><h2>SCANNING FOR NEXT OPPORTUNITY</h2><div class='small-muted'>Previous signal window expired.</div></div>", unsafe_allow_html=True)
+        st.markdown("<div class='signal-card signal-wait'><h2>WAITING FOR NEXT QUALIFIED SETUP</h2><div class='small-muted'>Previous signal window expired.</div></div>", unsafe_allow_html=True)
         return
     prepared = signal.get("stage") == "PREPARE" or signal.get("status") == "PREPARATION"
     if prepared and now >= entry:
@@ -2429,10 +2903,10 @@ def show_signal_pad(signal):
         status = "ENTRY WINDOW · VERIFY MARKET"
         remaining = max(0, int((expiry-now).total_seconds()))
     css = "signal-call" if direction == "CALL" else "signal-put" if direction == "PUT" else "signal-wait"
-    label = "RISE / CALL" if direction == "CALL" else "FALL / PUT" if direction == "PUT" else "SCANNING"
+    label = "PREPARING RISE / CALL" if prepared and direction == "CALL" else "PREPARING FALL / PUT" if prepared and direction == "PUT" else "RISE / CALL" if direction == "CALL" else "FALL / PUT" if direction == "PUT" else "WAIT"
     entry_label = entry.strftime("%H:%M:%S")
     st.markdown(
-        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.7 · {signal.get('instrument','')}</div>"
+        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.8 · {signal.get('instrument','')}</div>"
         f"<h1 style='font-size:30px;margin:2px 0'>{label}</h1><div><b>{status}</b></div>"
         f"<div style='font-size:15px;margin-top:6px'>SCHEDULED ENTRY · <b>{entry_label} CAT</b></div>"
         f"<div class='small-muted'>{signal.get('reason','')}</div></div>",
@@ -2499,7 +2973,7 @@ with st.sidebar:
         index=1,
         key="ghost_market_engine"
     )
-    st.markdown("<div class='ghost-zone-status'><b>4.7 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
+    st.markdown("<div class='ghost-zone-status'><b>4.8 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
     if market.startswith("Pocket"):
         old_feed = st.session_state.pop("deriv_live_feed", None)
         st.session_state.pop("deriv_live_symbol", None)
@@ -2543,7 +3017,7 @@ with st.sidebar:
         st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "Deriv keeps a persistent live tick subscription; the dashboard refreshes every 2 seconds. "
+        "Deriv keeps a persistent live tick subscription; the full dashboard refreshes every second and analysis runs every 5 seconds. "
         "Forex scans once per minute."
     )
     st.divider()
@@ -2592,32 +3066,36 @@ with st.sidebar:
 if st.session_state.pop("stop_stream_requested", False):
     auto_scan = False
 
-# A slightly slower UI refresh reduces visible redraw/flicker while keeping
-# the persistent Deriv tick subscription running between dashboard updates.
-# The analysis scheduler below remains unchanged.
+# Refresh the whole dashboard every second for countdowns/status; the persistent
+# Deriv stream is analyzed every five seconds to avoid repeated heavy work.
 if auto_refresh:
-    st_autorefresh(interval=2000, key="desk_clock")
+    st_autorefresh(interval=1000, key="desk_clock")
 
 now = now_cat()
 st.caption(
     f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
 )
 
-scan_interval = 2 if market.startswith("Deriv") else 60
+scan_interval = 5 if market.startswith("Deriv") else 60
 scan_slot = int(time.time() // scan_interval)
 last_slot = st.session_state.get("last_auto_scan_slot")
 
 auto_scan_due = auto_scan and scan_slot != last_slot
 pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST ZONE FOREX|"
-pending_due = any(
-    key.startswith(pending_prefix)
-    and now_cat() >= datetime.fromisoformat(item.get("entry_at", now_cat().isoformat()))
-    for key, item in st.session_state.get("ghost_pending_candidates", {}).items()
-)
-run_scan = bool(scan or auto_scan_due or pending_due)
-
+pending_active = any(key.startswith(pending_prefix) for key in st.session_state.get("ghost_pending_candidates", {}))
+# A locked or unsettled prediction must keep the feed/engine alive even if the
+# general auto-scan toggle is off, including after a Streamlit session restart.
+try:
+    with _learning_connect() as _conn:
+        db_active_signal = bool(_conn.execute("""SELECT 1 FROM ghost_signal_history
+            WHERE market='GHOST PROTOCOL' AND instrument=? AND status IN ('PREPARED','ENTRY READY')
+            LIMIT 1""", (GHOST_NAME,)).fetchone()) if market.startswith("Deriv") else False
+except Exception:
+    db_active_signal = False
+pending_monitor_due = (pending_active or db_active_signal) and scan_slot != last_slot
+run_scan = bool(scan or auto_scan_due or pending_monitor_due)
 if run_scan:
-    if auto_scan_due:
+    if auto_scan_due or pending_monitor_due:
         st.session_state["last_auto_scan_slot"] = scan_slot
 
     if market.startswith("Pocket"):
@@ -2653,7 +3131,7 @@ if run_scan:
                         model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                     result = apply_experience_gate(result, model_cache[model_key], df)
                     result = historical_pattern_memory("FOREX", pair, result, df)
-                    result = apply_preparation_gate(result, "GHOST ZONE FOREX", pair, expiry)
+                    result = apply_preparation_gate(result, "GHOST ZONE FOREX", pair, expiry, candles=chosen.get("df"))
                     resolve_signal_history("GHOST ZONE FOREX", pair, result.get("price"))
                     if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                         st.session_state["ghost_last_candidate"] = {"market": "FOREX", "instrument": pair, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
@@ -2776,8 +3254,8 @@ if run_scan:
                     model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                 result = apply_experience_gate(result, model_cache[model_key], closed_brain_candles)
                 result = historical_pattern_memory("DERIV", GHOST_NAME, result, closed_brain_candles)
-                result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1)
-                resolve_signal_history("GHOST PROTOCOL", GHOST_NAME, result.get("price"))
+                result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1, candles=closed_brain_candles, forming_candle=_forming_bar)
+                resolve_signal_history("GHOST PROTOCOL", GHOST_NAME, result.get("price"), price_history=ticks)
                 if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                     st.session_state["ghost_last_candidate"] = {"market": "DERIV", "instrument": GHOST_NAME, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
 
@@ -2798,21 +3276,23 @@ if run_scan:
                     st.session_state["active_signal"] = build_signal_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
                 _active = st.session_state.get("active_signal") or {}
                 _active.update({"signal_id": result.get("signal_id") or _active.get("signal_id"),
+                                "signal_key": result.get("signal_key") or _active.get("signal_key"),
                                 "zone_id": result.get("zone_id"), "historical_memory": result.get("historical_memory"),
                                 "evidence": {"reason": result.get("reason"), "zone_analysis": result.get("zone_analysis"),
                                              "brains": result.get("brains"), "market_regime": result.get("market_regime"),
                                              "historical_memory": result.get("historical_memory")},
                                 "features": build_learning_features(result, closed_brain_candles)})
                 persist_signal_history(_active, status="ENTRY READY", entry_price=result.get("entry_point", result.get("price")))
-            elif result.get("stage") in ("SETUP DEVELOPING", "PREPARE"):
+            elif result.get("stage") in ("SETUP DEVELOPING", "PREPARE", "FINAL CONFIRMATION CHECK"):
                 prep = build_preparation_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
                 if prep is not None:
                     prep["signal_id"] = result.get("signal_id")
                     prep["zone_id"] = result.get("zone_id")
                     prep["historical_memory"] = result.get("historical_memory")
-                    prep["evidence"] = {"reason": result.get("reason"), "zone_analysis": result.get("zone_analysis"),
+                    prep["evidence"] = dict(result.get("evidence") or {})
+                    prep["evidence"].update({"reason": result.get("reason"), "zone_analysis": result.get("zone_analysis"),
                                         "brains": result.get("brains"), "market_regime": result.get("market_regime"),
-                                        "historical_memory": result.get("historical_memory")}
+                                        "historical_memory": result.get("historical_memory")})
                     prep["features"] = build_learning_features(result, closed_brain_candles)
                     st.session_state["active_signal"] = prep
                     persist_signal_history(prep, status="PREPARED")
@@ -2900,12 +3380,6 @@ if market.startswith("Deriv"):
     else:
         st.info("Deriv feed has not started yet. Select Deriv and press CONNECT & SCAN GHOST once; automatic scanning then maintains it.")
 show_signal_pad(active_signal)
-if result and result.get("stage") and result.get("stage") not in ("ENTRY READY", "PREPARE"):
-    _zone = result.get("zone_analysis", {})
-    _zone_state = _zone.get("state", result.get("stage", "SCANNING"))
-    _brief = ("Monitoring both zones. Waiting for a qualified market reaction."
-              if result.get("stage") == "ZONE MONITORING" else result.get("reason", "Monitoring market structure."))
-    st.markdown(f"<div class='ghost-zone-status'><b>MARKET READ · {_zone_state}</b><br>{_brief}</div>", unsafe_allow_html=True)
 if result:
     with st.expander("GHOST INTELLIGENCE READOUT & LEARNING", expanded=False):
         _brains = result.get("brains", {})
@@ -2958,7 +3432,8 @@ _st1, _st2, _st3, _st4 = st.columns(4)
 _st1.metric("PREDICTIONS", int(_signal_totals.get("total") or 0))
 _st2.metric("WINS", _wins)
 _st3.metric("LOSSES", _losses)
-_st4.metric("WIN RATE · SETTLED", f"{_wins/(_wins+_losses):.1%}" if (_wins+_losses) else "NOT ESTABLISHED")
+_st4.metric("DRAW / VOID", f"{int(_signal_totals.get('draws') or 0)} / {int(_signal_totals.get('voids') or 0)}")
+st.caption(f"Settled prediction win rate: {_wins/(_wins+_losses):.1%}" if (_wins+_losses) else "Win rate not established yet · cancelled and missed signals are not counted as wins or losses.")
 if _signal_rows:
     _history_view = []
     for _r in _signal_rows:
@@ -2970,6 +3445,31 @@ else:
     st.caption("No GHOST predictions have reached the preparation stage yet. Every future setup will receive a permanent history record.")
 st.download_button("EXPORT SIGNAL HISTORY", data=signal_history_export_bytes(),
                    file_name="ghost_signal_history.csv", mime="text/csv", use_container_width=True)
+
+if market.startswith("Deriv"):
+    with st.expander("HISTORICAL DERIV VALIDATION · WALK-FORWARD REPLAY", expanded=False):
+        _backtest_bars = st.select_slider("Completed 1-minute candles to replay", options=[300, 400, 500, 600, 800, 1000], value=600)
+        _backtest_data = (st.session_state.get("deriv_output") or {}).get("candles")
+        if st.button("RUN HISTORICAL GHOST TEST", use_container_width=True, key="ghost_48_backtest"):
+            if _backtest_data is None or len(_backtest_data) < 80:
+                st.warning("Deriv history is not ready. Wait for the historical candle load to complete.")
+            else:
+                with st.spinner("Replaying C1 → C2 → C3 without using future candles..."):
+                    st.session_state["ghost_48_backtest_result"] = run_historical_backtest(
+                        _backtest_data, market="DERIV", instrument=GHOST_NAME, max_bars=_backtest_bars)
+        _bt = st.session_state.get("ghost_48_backtest_result")
+        if _bt:
+            st.caption(f"{_bt.get('status')} · {_bt.get('bars_tested', 0)} completed candles · {_bt.get('start', '')} to {_bt.get('end', '')}")
+            _b1, _b2, _b3, _b4 = st.columns(4)
+            _b1.metric("QUALIFIED SIGNALS", _bt.get("total_signals", 0))
+            _b2.metric("WINS", _bt.get("wins", 0))
+            _b3.metric("LOSSES", _bt.get("losses", 0))
+            _b4.metric("WIN RATE", f"{_bt['win_rate']:.1%}" if _bt.get("win_rate") is not None else "NOT ESTABLISHED")
+            st.caption(f"Zone setups: {_bt.get('zone_signals', 0)} · Evidence-qualified mid-range setups: {_bt.get('midrange_signals', 0)} · Draws: {_bt.get('draws', 0)}")
+            if _bt.get("trades"):
+                st.dataframe(pd.DataFrame(_bt["trades"]), use_container_width=True, hide_index=True)
+            st.caption(_bt.get("note", ""))
+            st.caption(f"Replay diagnostics: {_bt.get('diagnostics', {})}")
 
 # Detailed intelligence, reasons and model explanations stay in the learning
 # observations; the visible interface only exposes backup and restore controls.
@@ -3008,10 +3508,10 @@ with restore_col:
 
 
 # ============================================================
-# GHOST 4.7 — MANUAL TRADE OUTCOME FEEDBACK
+# GHOST 4.8 — MANUAL TRADE OUTCOME FEEDBACK
 # ============================================================
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST 4.7 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST 4.8 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
 st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
 _saved_candidate = st.session_state.get("ghost_last_candidate") or {}
 active_result = _saved_candidate.get("result")
@@ -3042,4 +3542,4 @@ try:
 except Exception as _journal_exc:
     st.caption(f"Trade journal is unavailable: {_journal_exc}")
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.7 · ADAPTIVE ZONE INTELLIGENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.8 · SIGNAL INTEGRITY · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
