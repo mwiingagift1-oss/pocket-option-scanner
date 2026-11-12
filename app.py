@@ -2,6 +2,7 @@ import os
 import json
 import time
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -37,7 +38,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.6 Adaptive Zone Intelligence",
+    page_title="GHOST Protocol 4.7 Adaptive Zone Intelligence",
     page_icon="📡",
     layout="wide"
 )
@@ -125,7 +126,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.6</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.7</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -1263,7 +1264,7 @@ def ghost_protocol(ticks):
 
 
 # ============================================================
-# GHOST 4.6 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
+# GHOST 4.7 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
 # ============================================================
 def detect_market_regime(candles):
     """Completed-candle regime estimate; synthetic tick count is never called volume."""
@@ -1637,6 +1638,18 @@ def init_learning_db(db_path=None):
         if "features" not in columns:
             conn.execute("ALTER TABLE observations ADD COLUMN features TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_observations_pending ON observations(market,instrument,resolved_at,observed_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS ghost_signal_history (
+            signal_id TEXT PRIMARY KEY, signal_key TEXT NOT NULL UNIQUE,
+            session_date TEXT NOT NULL, session_name TEXT NOT NULL,
+            market TEXT NOT NULL, instrument TEXT NOT NULL, direction TEXT NOT NULL,
+            zone_id TEXT, created_at TEXT NOT NULL, entry_time TEXT NOT NULL,
+            expiry_time TEXT NOT NULL, entry_price REAL, settlement_price REAL,
+            status TEXT NOT NULL, outcome TEXT, reason TEXT NOT NULL,
+            evidence TEXT NOT NULL, features TEXT, review TEXT,
+            finalized_at TEXT
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ghost_signals_day ON ghost_signal_history(session_date,session_name,status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ghost_signals_expiry ON ghost_signal_history(status,expiry_time)")
         conn.execute("""CREATE TABLE IF NOT EXISTS experience_validation_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             market TEXT NOT NULL, instrument TEXT NOT NULL,
@@ -1689,9 +1702,13 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
              json.dumps(evidence, default=str), json.dumps(features)))
         inserted = cur.rowcount > 0
     if inserted and supabase_cloud_enabled():
-        result_sync = sync_learning_cloud(db_path, upload=True, download=False)
-        if not result_sync.get("ok"):
-            st.session_state["ghost_cloud_sync_result"] = result_sync
+        with _learning_connect(db_path) as conn:
+            saved = conn.execute("SELECT id FROM observations WHERE market=? AND instrument=? AND candle_key=?",
+                                 (market, instrument, candle_key)).fetchone()
+        if saved:
+            result_sync = upload_learning_rows([int(saved["id"])], db_path)
+            if not result_sync.get("ok"):
+                st.session_state["ghost_cloud_sync_result"] = result_sync
     return inserted
 
 
@@ -1705,6 +1722,7 @@ def resolve_learning_observations(market, instrument, current_price, db_path=Non
     now_dt = as_cat(now).to_pydatetime() if not isinstance(now, datetime) else as_cat(now).to_pydatetime()
     init_learning_db(db_path)
     updated = 0
+    updated_ids = []
     with _learning_connect(db_path) as conn:
         rows = conn.execute("""SELECT id,observed_at,reference_price FROM observations
             WHERE market=? AND instrument=? AND resolved_at IS NULL""", (market, instrument)).fetchall()
@@ -1723,8 +1741,9 @@ def resolve_learning_observations(market, instrument, current_price, db_path=Non
             conn.execute("UPDATE observations SET resolved_at=?,future_price=?,outcome=? WHERE id=?",
                          (now_dt.isoformat(), current_price, outcome, row["id"]))
             updated += 1
-    if updated and supabase_cloud_enabled():
-        result_sync = sync_learning_cloud(db_path, upload=True, download=False)
+            updated_ids.append(int(row["id"]))
+    if updated_ids and supabase_cloud_enabled():
+        result_sync = upload_learning_rows(updated_ids, db_path)
         if not result_sync.get("ok"):
             st.session_state["ghost_cloud_sync_result"] = result_sync
     return updated
@@ -1825,6 +1844,84 @@ def supabase_cloud_enabled():
     return bool(url and key)
 
 
+def hydrate_signal_history_from_observations(db_path=None):
+    """Restore signal audit rows encoded in the existing cloud observations table."""
+    init_learning_db(db_path)
+    restored = 0
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("""SELECT evidence FROM observations
+            WHERE market='__GHOST_SIGNAL_HISTORY__'""").fetchall()
+        for row in rows:
+            try:
+                raw_evidence = row["evidence"] or "{}"
+                item = json.loads(raw_evidence) if isinstance(raw_evidence, str) else raw_evidence
+                if not isinstance(item, dict) or not item.get("signal_id"):
+                    continue
+                conn.execute("""INSERT INTO ghost_signal_history
+                    (signal_id,signal_key,session_date,session_name,market,instrument,direction,zone_id,
+                     created_at,entry_time,expiry_time,entry_price,settlement_price,status,outcome,
+                     reason,evidence,features,review,finalized_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(signal_id) DO UPDATE SET
+                    settlement_price=COALESCE(excluded.settlement_price,ghost_signal_history.settlement_price),
+                    status=CASE WHEN ghost_signal_history.status IN ('WIN','LOSS','DRAW','CANCELLED','MISSED')
+                                THEN ghost_signal_history.status ELSE excluded.status END,
+                    outcome=COALESCE(excluded.outcome,ghost_signal_history.outcome),
+                    review=COALESCE(excluded.review,ghost_signal_history.review),
+                    finalized_at=COALESCE(excluded.finalized_at,ghost_signal_history.finalized_at)""",
+                    (item.get("signal_id"), item.get("signal_key", item.get("signal_id")), item.get("session_date", ""),
+                     item.get("session_name", "OFF SESSION"), item.get("market", "GHOST PROTOCOL"),
+                     item.get("instrument", ""), item.get("direction", "WAIT"), item.get("zone_id"),
+                     item.get("created_at", ""), item.get("entry_time", ""), item.get("expiry_time", ""),
+                     item.get("entry_price"), item.get("settlement_price"), item.get("status", "PREPARED"),
+                     item.get("outcome"), item.get("reason", ""), json.dumps(item.get("evidence", {}), default=str),
+                     json.dumps(item.get("features")) if item.get("features") is not None else None,
+                     item.get("review"), item.get("finalized_at")))
+                restored += 1
+            except Exception:
+                continue
+    return restored
+
+
+def sync_signal_history_row(signal_id, db_path=None):
+    """Mirror one signal lifecycle snapshot into the existing Supabase observations table."""
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM ghost_signal_history WHERE signal_id=?", (str(signal_id),)).fetchone()
+        if not row:
+            return False
+        item = dict(row)
+        payload_item = dict(item)
+        try: payload_item["evidence"] = json.loads(item.get("evidence") or "{}")
+        except Exception: pass
+        try: payload_item["features"] = json.loads(item.get("features")) if item.get("features") else None
+        except Exception: pass
+        payload = json.dumps(payload_item, default=str)
+        cur = conn.execute("""INSERT INTO observations
+            (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,
+             resolved_at,future_price,outcome,features)
+            VALUES ('__GHOST_SIGNAL_HISTORY__',?,?,?,?,?,?,?,?,?,?,?,NULL)
+            ON CONFLICT(market,instrument,candle_key) DO UPDATE SET
+            observed_at=excluded.observed_at,reference_price=excluded.reference_price,
+            brain_votes=excluded.brain_votes,brain_scores=excluded.brain_scores,state=excluded.state,
+            evidence=excluded.evidence,resolved_at=excluded.resolved_at,future_price=excluded.future_price,
+            outcome=excluded.outcome,features=NULL""",
+            (item["instrument"], item["signal_id"], item["created_at"], float(item.get("entry_price") or 0.0),
+             json.dumps({"SIGNAL_DIRECTION": item["direction"]}), "{}", item["status"], payload,
+             item.get("finalized_at"), item.get("settlement_price"),
+             item.get("outcome") if item.get("outcome") in ("WIN", "LOSS", "DRAW") else None))
+        saved = conn.execute("""SELECT id FROM observations WHERE market='__GHOST_SIGNAL_HISTORY__'
+            AND instrument=? AND candle_key=?""", (item["instrument"], item["signal_id"])).fetchone()
+    if saved and supabase_cloud_enabled():
+        upload_result = upload_learning_rows([int(saved["id"])], db_path)
+        if not upload_result.get("ok"):
+            try:
+                st.session_state["ghost_cloud_sync_result"] = upload_result
+            except Exception:
+                pass
+    return True
+
+
 def sync_learning_cloud(db_path=None, *, upload=True, download=True):
     """Two-way SQLite/Supabase sync; restore and merge cloud rows before uploading."""
     url, key = _supabase_config()
@@ -1843,26 +1940,34 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
         if download:
             read_headers = dict(headers)
             read_headers["Prefer"] = "count=exact"
-            response = requests.get(endpoint, params={"select": "*", "order": "id.asc", "limit": 1000},
-                                    headers=read_headers, timeout=25)
-            response.raise_for_status()
-            remote_rows = response.json()
-            with _learning_connect(db_path) as conn:
-                for row in remote_rows:
-                    conn.execute("""INSERT INTO observations
-                        (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome,features)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                        ON CONFLICT(market,instrument,candle_key) DO UPDATE SET
-                        resolved_at=COALESCE(excluded.resolved_at, observations.resolved_at),
-                        future_price=COALESCE(excluded.future_price, observations.future_price),
-                        outcome=COALESCE(excluded.outcome, observations.outcome),
-                        features=COALESCE(excluded.features, observations.features)""",
-                        (row.get("market"), row.get("instrument"), row.get("candle_key"),
-                         row.get("observed_at"), row.get("reference_price"), row.get("brain_votes") or "{}",
-                         row.get("brain_scores") or "{}", row.get("state") or "SCANNING",
-                         row.get("evidence") or "{}", row.get("resolved_at"), row.get("future_price"),
-                         row.get("outcome"), row.get("features")))
-                    downloaded += 1
+            offset = 0
+            page_size = 1000
+            while True:
+                response = requests.get(endpoint, params={"select": "*", "order": "id.asc",
+                                                          "limit": page_size, "offset": offset},
+                                        headers=read_headers, timeout=25)
+                response.raise_for_status()
+                remote_rows = response.json()
+                with _learning_connect(db_path) as conn:
+                    for row in remote_rows:
+                        conn.execute("""INSERT INTO observations
+                            (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,resolved_at,future_price,outcome,features)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(market,instrument,candle_key) DO UPDATE SET
+                            resolved_at=COALESCE(excluded.resolved_at, observations.resolved_at),
+                            future_price=COALESCE(excluded.future_price, observations.future_price),
+                            outcome=COALESCE(excluded.outcome, observations.outcome),
+                            features=COALESCE(excluded.features, observations.features)""",
+                            (row.get("market"), row.get("instrument"), row.get("candle_key"),
+                             row.get("observed_at"), row.get("reference_price"), row.get("brain_votes") or "{}",
+                             row.get("brain_scores") or "{}", row.get("state") or "SCANNING",
+                             row.get("evidence") or "{}", row.get("resolved_at"), row.get("future_price"),
+                             row.get("outcome"), row.get("features")))
+                        downloaded += 1
+                if len(remote_rows) < page_size:
+                    break
+                offset += page_size
+            hydrate_signal_history_from_observations(db_path)
 
         # Upload only after cloud history has been merged into SQLite.
         # `uploaded` is rows submitted/upserted, not necessarily brand-new cloud rows.
@@ -1881,6 +1986,28 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
         return {"ok": True, "message": "Cloud sync successful.", "uploaded": uploaded, "downloaded": downloaded}
     except Exception as exc:
         return {"ok": False, "message": f"Supabase sync failed: {exc}", "uploaded": uploaded, "downloaded": downloaded}
+
+
+def upload_learning_rows(row_ids, db_path=None):
+    """Upload only newly inserted or newly resolved observations, not the full archive."""
+    url, key = _supabase_config()
+    if not (url and key):
+        return {"ok": False, "message": "Supabase credentials are not configured.", "uploaded": 0}
+    ids = sorted({int(x) for x in row_ids if x is not None})
+    if not ids:
+        return {"ok": True, "message": "No changed observations.", "uploaded": 0}
+    try:
+        with _learning_connect(db_path) as conn:
+            placeholders = ",".join("?" for _ in ids)
+            rows = [dict(r) for r in conn.execute(f"SELECT * FROM observations WHERE id IN ({placeholders}) ORDER BY id", ids).fetchall()]
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                   "Prefer": "resolution=merge-duplicates,return=minimal"}
+        response = requests.post(f"{url}/rest/v1/observations", params={"on_conflict": "market,instrument,candle_key"},
+                                 headers=headers, json=rows, timeout=20)
+        response.raise_for_status()
+        return {"ok": True, "message": "Changed observations uploaded.", "uploaded": len(rows)}
+    except Exception as exc:
+        return {"ok": False, "message": f"Incremental cloud upload failed: {exc}", "uploaded": 0}
 
 
 def cloud_learning_count():
@@ -1907,8 +2034,244 @@ if not st.session_state.get("ghost_cloud_initial_sync_done", False):
 
 
 # ============================================================
-# PREDICTIVE SCHEDULED-ENTRY GATE
+# HISTORICAL EXPERIENCE + DAILY OPPORTUNITY CONTROL + SIGNAL AUDIT
 # ============================================================
+
+SESSION_CAPS = {"MORNING": 2, "AFTERNOON": 4, "EVENING": 4}
+
+
+def cat_session_info(moment=None):
+    dt = as_cat(moment or now_cat()).to_pydatetime()
+    hour = dt.hour
+    if 6 <= hour < 12:
+        name = "MORNING"
+    elif 12 <= hour < 18:
+        name = "AFTERNOON"
+    elif 18 <= hour < 24:
+        name = "EVENING"
+    else:
+        name = "OFF SESSION"
+    return dt.date().isoformat(), name, SESSION_CAPS.get(name, 0)
+
+
+def daily_opportunity_state(moment=None, db_path=None):
+    day, session, cap = cat_session_info(moment)
+    init_learning_db(db_path)
+    if cap <= 0:
+        return {"date": day, "session": session, "cap": 0, "used": 0, "remaining": 0, "allowed": False}
+    with _learning_connect(db_path) as conn:
+        used = conn.execute("""SELECT COUNT(*) AS n FROM ghost_signal_history
+            WHERE session_date=? AND session_name=?
+            AND status IN ('ENTRY READY','PENDING SETTLEMENT','WIN','LOSS','DRAW')""", (day, session)).fetchone()["n"]
+    used = int(used or 0)
+    return {"date": day, "session": session, "cap": cap, "used": used,
+            "remaining": max(0, cap-used), "allowed": used < cap}
+
+
+def historical_pattern_memory(market, instrument, result, candles=None, db_path=None, neighbours=40):
+    """Find nearest past feature situations for this instrument only; labels are past-only."""
+    features = np.asarray(build_learning_features(result, candles), dtype=float)
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("""SELECT features,outcome,observed_at FROM observations
+            WHERE market=? AND instrument=? AND outcome IN ('UP','DOWN') AND features IS NOT NULL
+            ORDER BY observed_at""", (market, instrument)).fetchall()
+    parsed = []
+    for row in rows:
+        try:
+            x = np.asarray(json.loads(row["features"]), dtype=float)
+            if x.size == features.size and np.all(np.isfinite(x)):
+                parsed.append((x, row["outcome"], row["observed_at"]))
+        except Exception:
+            continue
+    report = {"status": "COLLECTING SIMILAR EXAMPLES", "available_examples": len(parsed),
+              "similar_examples": 0, "up": 0, "down": 0, "flat": 0,
+              "rise_rate": None, "fall_rate": None, "directional_support": None,
+              "nearest_dates": []}
+    if len(parsed) < 20:
+        result["historical_memory"] = report
+        return result
+    X = np.vstack([x for x, _, _ in parsed])
+    scale = np.nanstd(X, axis=0)
+    scale[scale < 1e-6] = 1.0
+    distances = np.sqrt(np.mean(np.square((X-features)/scale), axis=1))
+    k = min(int(neighbours), len(parsed))
+    idx = np.argsort(distances)[:k]
+    # Weight nearer examples more strongly, while retaining transparent raw counts.
+    chosen = [parsed[int(i)] for i in idx]
+    ups = sum(y == "UP" for _, y, _ in chosen)
+    downs = sum(y == "DOWN" for _, y, _ in chosen)
+    total = ups + downs
+    rise_rate = ups / total if total else None
+    fall_rate = downs / total if total else None
+    candidate = result.get("signal")
+    support = rise_rate if candidate == "CALL" else fall_rate if candidate == "PUT" else None
+    report.update({"status": "HISTORICAL COMPARISON READY", "similar_examples": total,
+                   "up": ups, "down": downs, "rise_rate": rise_rate,
+                   "fall_rate": fall_rate, "directional_support": support,
+                   "nearest_dates": [chosen[int(i)][2] for i in range(min(5, len(chosen)))]})
+    result["historical_memory"] = report
+    # Past similarity is a veto only when the sample is meaningful and clearly adverse.
+    if candidate in ("CALL", "PUT") and total >= 20 and support is not None and support < 0.45:
+        result["signal"] = "WAIT"
+        result["stage"] = "HISTORICAL CONFLICT / WAIT"
+        result["reason"] = (f"Current {candidate} setup resembles {total} past situations, but only "
+                            f"{support:.0%} moved in the predicted direction. Historical evidence vetoes this setup.")
+    return result
+
+
+def persist_signal_history(signal, *, status=None, entry_price=None, db_path=None):
+    if not signal or not signal.get("signal_id"):
+        return False
+    init_learning_db(db_path)
+    signal_id = str(signal["signal_id"])
+    created = str(signal.get("signal_created") or now_cat().isoformat())
+    try:
+        # Attribute a setup to the session in which its scheduled entry occurs.
+        day, session, _ = cat_session_info(signal.get("entry_time") or created)
+    except Exception:
+        day, session, _ = cat_session_info()
+    direction = str(signal.get("candidate_direction") or signal.get("direction") or "WAIT")
+    if direction not in ("CALL", "PUT"):
+        return False
+    signal_key = str(signal.get("signal_key") or f"{signal.get('market')}|{signal.get('instrument')}|{signal_id}")
+    stage_status = status or ("ENTRY READY" if signal.get("stage") == "ENTRY READY" else "PREPARED")
+    evidence = signal.get("evidence") or {"reason": signal.get("reason", ""), "pattern": signal.get("pattern", ""),
+        "zone_id": signal.get("zone_id"), "market_regime": signal.get("market_regime"),
+        "historical_memory": signal.get("historical_memory")}
+    features = signal.get("features")
+    try:
+        entry_value = entry_price if entry_price is not None else signal.get("entry_point", signal.get("reference_price"))
+        entry_value = float(entry_value) if entry_value is not None else None
+        if stage_status != "ENTRY READY":
+            entry_value = None
+    except (TypeError, ValueError):
+        entry_value = None
+    with _learning_connect(db_path) as conn:
+        existing = conn.execute("SELECT status,entry_price FROM ghost_signal_history WHERE signal_id=?", (signal_id,)).fetchone()
+        if existing:
+            # Direction, identity and original evidence are immutable. Only lifecycle fields advance.
+            if existing["status"] not in ("WIN", "LOSS", "DRAW", "CANCELLED", "MISSED"):
+                conn.execute("""UPDATE ghost_signal_history SET status=?,
+                    entry_price=CASE WHEN ?='ENTRY READY' THEN COALESCE(?,entry_price) ELSE entry_price END,
+                    reason=? WHERE signal_id=?""",
+                    (stage_status, stage_status, entry_value, str(signal.get("reason", ""))[:1200], signal_id))
+        else:
+            conn.execute("""INSERT OR IGNORE INTO ghost_signal_history
+                (signal_id,signal_key,session_date,session_name,market,instrument,direction,zone_id,
+                 created_at,entry_time,expiry_time,entry_price,status,reason,evidence,features)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (signal_id, signal_key, day, session, str(signal.get("market", "DERIV")),
+                 str(signal.get("instrument", "")), direction, str(signal.get("zone_id", "")),
+                 created, str(signal.get("entry_time", created)), str(signal.get("expiry_time", created)),
+                 entry_value, stage_status, str(signal.get("reason", ""))[:1200],
+                 json.dumps(evidence, default=str), json.dumps(features) if features is not None else None))
+    sync_signal_history_row(signal_id, db_path)
+    return True
+
+
+def close_signal_history(signal_id, status, *, settlement_price=None, outcome=None, review="", db_path=None):
+    if not signal_id:
+        return False
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        row = conn.execute("SELECT status FROM ghost_signal_history WHERE signal_id=?", (str(signal_id),)).fetchone()
+        if not row or row["status"] in ("WIN", "LOSS", "DRAW", "CANCELLED", "MISSED"):
+            return False
+        if row["status"] == "ENTRY READY" and status in ("CANCELLED", "MISSED"):
+            return False
+        conn.execute("""UPDATE ghost_signal_history SET status=?,settlement_price=?,outcome=?,review=?,finalized_at=?
+            WHERE signal_id=?""", (status, settlement_price, outcome, review[:1200], now_cat().isoformat(), str(signal_id)))
+    sync_signal_history_row(str(signal_id), db_path)
+    return True
+
+
+def resolve_signal_history(market, instrument, current_price, now=None, db_path=None):
+    """Settle GHOST's prediction against the same live instrument quote; not the user's trade."""
+    try:
+        price = float(current_price)
+    except (TypeError, ValueError):
+        return 0
+    now_dt = as_cat(now or now_cat()).to_pydatetime()
+    init_learning_db(db_path)
+    changed = 0
+    changed_ids = []
+    with _learning_connect(db_path) as conn:
+        stale_preparations = conn.execute("""SELECT signal_id,entry_time FROM ghost_signal_history
+            WHERE market=? AND instrument=? AND status='PREPARED'""", (market, instrument)).fetchall()
+        for prep in stale_preparations:
+            try:
+                scheduled = as_cat(prep["entry_time"]).to_pydatetime()
+                if now_dt > scheduled + timedelta(seconds=15):
+                    conn.execute("""UPDATE ghost_signal_history SET status='MISSED',review=?,finalized_at=?
+                        WHERE signal_id=? AND status='PREPARED'""",
+                        ("Preparation expired without a confirmed ENTRY READY state.", now_dt.isoformat(), prep["signal_id"]))
+                    changed += 1
+                    changed_ids.append(str(prep["signal_id"]))
+            except Exception:
+                continue
+        rows = conn.execute("""SELECT signal_id,direction,entry_price,expiry_time FROM ghost_signal_history
+            WHERE market=? AND instrument=? AND status='ENTRY READY'""", (market, instrument)).fetchall()
+        for row in rows:
+            try:
+                expiry = as_cat(row["expiry_time"]).to_pydatetime()
+            except Exception:
+                continue
+            if now_dt < expiry or row["entry_price"] is None:
+                continue
+            entry = float(row["entry_price"])
+            if abs(price-entry) <= max(abs(entry)*1e-10, 1e-10):
+                outcome = "DRAW"
+            elif (row["direction"] == "CALL" and price > entry) or (row["direction"] == "PUT" and price < entry):
+                outcome = "WIN"
+            else:
+                outcome = "LOSS"
+            review = f"GHOST prediction check: entry quote {entry:.8f}; expiry quote {price:.8f}; direction {row['direction']}. This evaluates the model prediction, not a user-executed contract."
+            conn.execute("""UPDATE ghost_signal_history SET status=?,outcome=?,settlement_price=?,review=?,finalized_at=?
+                WHERE signal_id=? AND status='ENTRY READY'""",
+                (outcome, outcome, price, review, now_dt.isoformat(), row["signal_id"]))
+            changed += 1
+            changed_ids.append(str(row["signal_id"]))
+    for signal_id in changed_ids:
+        sync_signal_history_row(signal_id, db_path)
+    return changed
+
+
+def signal_history_summary(db_path=None, limit=30):
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM ghost_signal_history ORDER BY created_at DESC LIMIT ?", (int(limit),)).fetchall()
+        totals = conn.execute("""SELECT COUNT(*) AS total,
+            SUM(CASE WHEN status='WIN' THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN status='LOSS' THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN status='DRAW' THEN 1 ELSE 0 END) AS draws,
+            SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) AS cancelled
+            FROM ghost_signal_history""").fetchone()
+    return [dict(r) for r in rows], dict(totals)
+
+
+def learning_data_inventory(market, instrument, db_path=None):
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        row = conn.execute("""SELECT COUNT(*) AS total,
+            SUM(CASE WHEN outcome IN ('UP','DOWN') THEN 1 ELSE 0 END) AS labelled,
+            SUM(CASE WHEN outcome IN ('UP','DOWN') AND features IS NOT NULL THEN 1 ELSE 0 END) AS model_ready
+            FROM observations WHERE market=? AND instrument=?""", (market, instrument)).fetchone()
+    return {k: int(row[k] or 0) for k in ("total", "labelled", "model_ready")}
+
+
+def signal_history_export_bytes(db_path=None):
+    import csv, io
+    init_learning_db(db_path)
+    with _learning_connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM ghost_signal_history ORDER BY created_at").fetchall()
+    out = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows([dict(r) for r in rows])
+    return out.getvalue().encode("utf-8")
+
 
 def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60):
     """Prepare a future entry at least prep_seconds ahead, then verify at entry."""
@@ -1917,8 +2280,10 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
     key = f"{market}|{instrument}"
     now_utc = pd.Timestamp.now(tz="UTC")
     candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
-    if result.get("stage") in ("FEED CHECK", "INVALIDATED", "RISK PAUSE", "AI DISAGREEMENT / WAIT") or candidate is None:
-        pending_all.pop(key, None)
+    if result.get("stage") in ("FEED CHECK", "INVALIDATED", "RISK PAUSE", "AI DISAGREEMENT / WAIT", "HISTORICAL CONFLICT / WAIT") or candidate is None:
+        old_pending = pending_all.pop(key, None)
+        if old_pending and old_pending.get("signal_id") and not old_pending.get("entry_issued", False):
+            close_signal_history(old_pending["signal_id"], "CANCELLED", review=result.get("reason", "Setup invalidated before entry."))
         return result
 
     zone_id = str(result.get("zone_id") or f"{candidate}|{result.get('candle_time', '')}")
@@ -1929,6 +2294,8 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
         if entry_utc.tzinfo is None:
             entry_utc = entry_utc.tz_localize("UTC")
     else:
+        if pending and pending.get("signal_id") and not pending.get("entry_issued", False):
+            close_signal_history(pending["signal_id"], "CANCELLED", review="Candidate direction or zone changed before entry; a new setup identity was created.")
         # Stronger zone reactions can target the next minute; developing
         # reactions get two minutes for another candle of evidence.
         evidence_score = float((result.get("fusion") or {}).get("total_score", 0) or 0)
@@ -1941,11 +2308,21 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
         entry_utc = next_boundary
         pending = {"direction": candidate, "zone_id": zone_id,
                    "entry_time": entry_utc.isoformat(), "created_at": now_utc.isoformat(),
-                   "entry_issued": False}
+                   "entry_issued": False, "signal_id": str(uuid.uuid4())}
         pending_all[key] = pending
 
     seconds_to_entry = (entry_utc - now_utc).total_seconds()
+    quota = daily_opportunity_state(as_cat(entry_utc).to_pydatetime())
+    if not quota["allowed"]:
+        pending_all.pop(key, None)
+        if pending and pending.get("signal_id") and not pending.get("entry_issued", False):
+            close_signal_history(pending["signal_id"], "CANCELLED", review="The scheduled-entry session opportunity cap was reached before entry.")
+        result.update({"signal": "WAIT", "stage": "SESSION CAP",
+                       "reason": f"{quota['session']} session limit reached ({quota['used']}/{quota['cap']}). GHOST will not create extra signals."})
+        return result
     result["candidate_direction"] = candidate
+    result["signal_id"] = pending.get("signal_id")
+    result["zone_id"] = zone_id
     result["scheduled_entry_time"] = as_cat(entry_utc).to_pydatetime()
     result["entry_time"] = as_cat(entry_utc).to_pydatetime()
     result["preparation_seconds"] = max(0, int(seconds_to_entry))
@@ -1965,6 +2342,8 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
                        "reason": f"Scheduled {candidate} entry time reached at {as_cat(entry_utc).strftime('%H:%M:%S')} CAT. Conditions rechecked; manual entry only."})
         return result
     pending_all.pop(key, None)
+    if pending.get("signal_id") and not pending.get("entry_issued", False):
+        close_signal_history(pending["signal_id"], "MISSED", review="The 15-second scheduled entry window passed without an issued entry.")
     result.update({"signal": "WAIT", "stage": "MISSED ENTRY WINDOW",
                    "reason": "The scheduled entry window passed. GHOST will wait for a fresh zone opportunity rather than issue a late signal."})
     return result
@@ -2053,7 +2432,7 @@ def show_signal_pad(signal):
     label = "RISE / CALL" if direction == "CALL" else "FALL / PUT" if direction == "PUT" else "SCANNING"
     entry_label = entry.strftime("%H:%M:%S")
     st.markdown(
-        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.6 · {signal.get('instrument','')}</div>"
+        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.7 · {signal.get('instrument','')}</div>"
         f"<h1 style='font-size:30px;margin:2px 0'>{label}</h1><div><b>{status}</b></div>"
         f"<div style='font-size:15px;margin-top:6px'>SCHEDULED ENTRY · <b>{entry_label} CAT</b></div>"
         f"<div class='small-muted'>{signal.get('reason','')}</div></div>",
@@ -2120,7 +2499,7 @@ with st.sidebar:
         index=1,
         key="ghost_market_engine"
     )
-    st.markdown("<div class='ghost-zone-status'><b>4.6 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
+    st.markdown("<div class='ghost-zone-status'><b>4.7 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
     if market.startswith("Pocket"):
         old_feed = st.session_state.pop("deriv_live_feed", None)
         st.session_state.pop("deriv_live_symbol", None)
@@ -2273,7 +2652,9 @@ if run_scan:
                         trained = train_experience_model("FOREX", pair)
                         model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                     result = apply_experience_gate(result, model_cache[model_key], df)
+                    result = historical_pattern_memory("FOREX", pair, result, df)
                     result = apply_preparation_gate(result, "GHOST ZONE FOREX", pair, expiry)
+                    resolve_signal_history("GHOST ZONE FOREX", pair, result.get("price"))
                     if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                         st.session_state["ghost_last_candidate"] = {"market": "FOREX", "instrument": pair, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
                     output.append({
@@ -2313,12 +2694,28 @@ if run_scan:
                 if not same_active:
                     st.session_state["active_signal"] = build_signal_record(
                         "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
+                _active_fx = st.session_state.get("active_signal") or {}
+                _fx_result = chosen["result"]
+                _active_fx.update({"signal_id": _fx_result.get("signal_id") or _active_fx.get("signal_id"),
+                    "zone_id": _fx_result.get("zone_id"),
+                    "evidence": {"reason": _fx_result.get("reason"), "historical_memory": _fx_result.get("historical_memory"),
+                                 "zone_analysis": _fx_result.get("zone_analysis"), "brains": _fx_result.get("brains")},
+                    "features": build_learning_features(_fx_result, chosen.get("df"))})
+                persist_signal_history(_active_fx, status="ENTRY READY", entry_price=_fx_result.get("entry_point", _fx_result.get("price")))
             elif preparing:
                 chosen = max(preparing, key=lambda item: item["result"].get("candle_time", ""))
                 prep = build_preparation_record(
                     "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
                 if prep is not None:
+                    _fx_result = chosen["result"]
+                    prep["signal_id"] = _fx_result.get("signal_id")
+                    prep["zone_id"] = _fx_result.get("zone_id")
+                    prep["historical_memory"] = _fx_result.get("historical_memory")
+                    prep["evidence"] = {"reason": _fx_result.get("reason"), "historical_memory": _fx_result.get("historical_memory"),
+                                        "zone_analysis": _fx_result.get("zone_analysis"), "brains": _fx_result.get("brains")}
+                    prep["features"] = build_learning_features(_fx_result, chosen.get("df"))
                     st.session_state["active_signal"] = prep
+                    persist_signal_history(prep, status="PREPARED")
             else:
                 active = st.session_state.get("active_signal")
                 if active and active.get("market") == "GHOST ZONE FOREX":
@@ -2378,7 +2775,9 @@ if run_scan:
                     trained = train_experience_model("DERIV", GHOST_NAME)
                     model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                 result = apply_experience_gate(result, model_cache[model_key], closed_brain_candles)
+                result = historical_pattern_memory("DERIV", GHOST_NAME, result, closed_brain_candles)
                 result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1)
+                resolve_signal_history("GHOST PROTOCOL", GHOST_NAME, result.get("price"))
                 if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                     st.session_state["ghost_last_candidate"] = {"market": "DERIV", "instrument": GHOST_NAME, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
 
@@ -2397,10 +2796,26 @@ if run_scan:
                 old_key = None if not existing else (existing.get("direction"), existing.get("candle1_time"), existing.get("instrument"))
                 if key != old_key:
                     st.session_state["active_signal"] = build_signal_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
+                _active = st.session_state.get("active_signal") or {}
+                _active.update({"signal_id": result.get("signal_id") or _active.get("signal_id"),
+                                "zone_id": result.get("zone_id"), "historical_memory": result.get("historical_memory"),
+                                "evidence": {"reason": result.get("reason"), "zone_analysis": result.get("zone_analysis"),
+                                             "brains": result.get("brains"), "market_regime": result.get("market_regime"),
+                                             "historical_memory": result.get("historical_memory")},
+                                "features": build_learning_features(result, closed_brain_candles)})
+                persist_signal_history(_active, status="ENTRY READY", entry_price=result.get("entry_point", result.get("price")))
             elif result.get("stage") in ("SETUP DEVELOPING", "PREPARE"):
                 prep = build_preparation_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
                 if prep is not None:
+                    prep["signal_id"] = result.get("signal_id")
+                    prep["zone_id"] = result.get("zone_id")
+                    prep["historical_memory"] = result.get("historical_memory")
+                    prep["evidence"] = {"reason": result.get("reason"), "zone_analysis": result.get("zone_analysis"),
+                                        "brains": result.get("brains"), "market_regime": result.get("market_regime"),
+                                        "historical_memory": result.get("historical_memory")}
+                    prep["features"] = build_learning_features(result, closed_brain_candles)
                     st.session_state["active_signal"] = prep
+                    persist_signal_history(prep, status="PREPARED")
             else:
                 active = st.session_state.get("active_signal")
                 if active and active.get("instrument") == GHOST_NAME:
@@ -2501,6 +2916,10 @@ if result:
         else:
             st.write("Collecting enough completed candles to evaluate the current support/resistance zones.")
         _lp = result.get("learning_profile", {})
+        _inv_market = "DERIV" if market.startswith("Deriv") else "FOREX"
+        _inv_instrument = GHOST_NAME if _inv_market == "DERIV" else (instrument_name or "")
+        _inventory = learning_data_inventory(_inv_market, _inv_instrument) if _inv_instrument else {"total": 0, "labelled": 0, "model_ready": 0}
+        st.write(f"Historical memory loaded for this instrument: {_inventory['total']} records · {_inventory['labelled']} direction-labelled · {_inventory['model_ready']} model-ready")
         st.write(f"Resolved learning observations: {_lp.get('resolved_observations', 0)}")
         for _name, _stats in _lp.get("stats", {}).items():
             _acc = _stats.get("accuracy")
@@ -2508,6 +2927,11 @@ if result:
         _ai = result.get("experience_ai", {})
         if _ai:
             st.write(f"Experience model: {_ai.get('status', 'collecting')} · resolved examples {_ai.get('samples', 0)}")
+        _hm = result.get("historical_memory", {})
+        if _hm:
+            st.write(f"Historical pattern memory: {_hm.get('status')} · similar past examples {_hm.get('similar_examples', 0)} · UP {_hm.get('up', 0)} · DOWN {_hm.get('down', 0)}")
+            if _hm.get("directional_support") is not None:
+                st.write(f"Historical support for current direction: {_hm['directional_support']:.1%}")
         _za = result.get("zone_analysis", {})
         if _za:
             st.write(f"Zone state: {_za.get('state')} · support evidence {_za.get('support_score', 0):.2f} · resistance evidence {_za.get('resistance_score', 0):.2f}")
@@ -2518,6 +2942,34 @@ if result and result.get("stage") == "PREPARE" and not active_signal:
 
 st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
 render_chart_area()
+
+# DAILY OPPORTUNITY LIMITS + IMMUTABLE SIGNAL HISTORY
+st.divider()
+st.markdown("<div class='ghost-kicker'>GHOST DAILY TARGET · MAXIMUM 10 CLEAN OPPORTUNITIES</div>", unsafe_allow_html=True)
+_q = daily_opportunity_state(now_cat())
+_q1, _q2, _q3, _q4 = st.columns(4)
+_q1.metric("MORNING · 06–12", f"{_q['used'] if _q['session']=='MORNING' else daily_opportunity_state(now_cat().replace(hour=8, minute=0, second=0, microsecond=0))['used']}/2")
+_q2.metric("AFTERNOON · 12–18", f"{daily_opportunity_state(now_cat().replace(hour=14, minute=0, second=0, microsecond=0))['used']}/4")
+_q3.metric("EVENING · 18–24", f"{daily_opportunity_state(now_cat().replace(hour=20, minute=0, second=0, microsecond=0))['used']}/4")
+_q4.metric("CURRENT SESSION", f"{_q['remaining']} LEFT" if _q['cap'] else "CLOSED")
+_signal_rows, _signal_totals = signal_history_summary(limit=30)
+_wins = int(_signal_totals.get("wins") or 0); _losses = int(_signal_totals.get("losses") or 0)
+_st1, _st2, _st3, _st4 = st.columns(4)
+_st1.metric("PREDICTIONS", int(_signal_totals.get("total") or 0))
+_st2.metric("WINS", _wins)
+_st3.metric("LOSSES", _losses)
+_st4.metric("WIN RATE · SETTLED", f"{_wins/(_wins+_losses):.1%}" if (_wins+_losses) else "NOT ESTABLISHED")
+if _signal_rows:
+    _history_view = []
+    for _r in _signal_rows:
+        _history_view.append({"CAT created": _r["created_at"], "Instrument": _r["instrument"],
+            "Direction": _r["direction"], "Status": _r["status"], "Outcome": _r["outcome"] or "—",
+            "Entry": _r["entry_price"], "Expiry quote": _r["settlement_price"], "Reason": _r["reason"][:180]})
+    st.dataframe(pd.DataFrame(_history_view), use_container_width=True, hide_index=True)
+else:
+    st.caption("No GHOST predictions have reached the preparation stage yet. Every future setup will receive a permanent history record.")
+st.download_button("EXPORT SIGNAL HISTORY", data=signal_history_export_bytes(),
+                   file_name="ghost_signal_history.csv", mime="text/csv", use_container_width=True)
 
 # Detailed intelligence, reasons and model explanations stay in the learning
 # observations; the visible interface only exposes backup and restore controls.
@@ -2556,10 +3008,10 @@ with restore_col:
 
 
 # ============================================================
-# GHOST 4.6 — MANUAL TRADE OUTCOME FEEDBACK
+# GHOST 4.7 — MANUAL TRADE OUTCOME FEEDBACK
 # ============================================================
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST 4.6 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST 4.7 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
 st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
 _saved_candidate = st.session_state.get("ghost_last_candidate") or {}
 active_result = _saved_candidate.get("result")
@@ -2590,4 +3042,4 @@ try:
 except Exception as _journal_exc:
     st.caption(f"Trade journal is unavailable: {_journal_exc}")
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.6 · ADAPTIVE ZONE INTELLIGENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.7 · ADAPTIVE ZONE INTELLIGENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
