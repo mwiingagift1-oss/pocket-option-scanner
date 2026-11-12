@@ -37,7 +37,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.3.1",
+    page_title="GHOST Protocol 4.4 Adaptive Confluence",
     page_icon="📡",
     layout="wide"
 )
@@ -98,7 +98,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">FOUR INTELLIGENCES · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.3.1</div><div class="ghost-sub">LIVE SIGNALS · CANDLE CHART · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">FOUR INTELLIGENCES · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.4</div><div class="ghost-sub">LIVE SIGNALS · CANDLE CHART · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -303,13 +303,27 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
 def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                         pullback_pct=50, learned_weights=None,
                         structure_candles=None):
-    """Strict A/B/C/D adaptive confluence. All inputs must be completed candles."""
+    """Strict four-brain fusion. The staircase remains the directional authority."""
     base = dict(staircase_result or {})
+    # A contextual layer may veto a staircase, never manufacture one.
+    native_stage = base.get("stage")
+    native_signal = base.get("signal", "WAIT")
+    if native_stage is not None and native_stage != "ENTRY READY":
+        base["signal"] = "WAIT"
+        base.setdefault("brains", {})
+        base["fusion"] = {"state": "BLOCKED", "block_reasons": [f"Native staircase stage is {native_stage}; four-brain context cannot override it."]}
+        base["reason"] = f"Native Three-Step gate: {native_stage}. Four-brain intelligence cannot create an entry. {base.get('reason', '')}"
+        return base
+    if native_signal not in ("CALL", "PUT"):
+        base["signal"] = "WAIT"
+        base["stage"] = native_stage or "SCANNING"
+        base["reason"] = "Native Three-Step staircase has no directional entry; confluence cannot create one."
+        return base
     empty = {"signal": "WAIT", "stage": "SCANNING", "brains": {},
-             "fusion": {"state": "COLLECTING"}, "brain_scores": {}}
+             "fusion": {"state": "COLLECTING"}, "brain_scores": {"CALL": 0, "PUT": 0}}
     if candles is None or len(candles) < 30:
         base.update(empty)
-        base["reason"] = "Collecting completed 1-minute candles for the timing and confirmation brains."
+        base["reason"] = "Collecting completed 1-minute candles for the four intelligence systems."
         return base
     d = candles.copy().reset_index(drop=True)
     structure = structure_candles.copy().reset_index(drop=True) if structure_candles is not None else aggregate_timeframe(d, 5)
@@ -318,30 +332,32 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
         base["reason"] = "Waiting for enough completed 5-minute structure candles."
         return base
 
-    # A — 3-Stairs: pure confirmed swing sequence on completed 5m structure.
+    # A: Three-Stairs — direction comes only from confirmed swing-price structure.
     highs, lows = confirmed_pivots(structure, strength)
     hs, ls = highs[-3:], lows[-3:]
-    bull_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] > hs[i-1][1] for i in (1,2)) and all(ls[i][1] > ls[i-1][1] for i in (1,2))
-    bear_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] < hs[i-1][1] for i in (1,2)) and all(ls[i][1] < ls[i-1][1] for i in (1,2))
+    bull_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] > hs[i-1][1] for i in (1, 2)) and all(ls[i][1] > ls[i-1][1] for i in (1, 2))
+    bear_a = len(hs) == 3 and len(ls) == 3 and all(hs[i][1] < hs[i-1][1] for i in (1, 2)) and all(ls[i][1] < ls[i-1][1] for i in (1, 2))
     direction_a = "CALL" if bull_a else "PUT" if bear_a else "WAIT"
     score_a = 2 if direction_a != "WAIT" else 0
 
-    # B — S/R location: count pivot touches around nearest confirmed levels.
+    # B: Location. A single touch is weak and cannot authorize an entry.
     sr = support_resistance_analysis(structure, lookback=120)
     last = d.iloc[-1]
     price = float(last.close)
     ranges = (structure.high.astype(float) - structure.low.astype(float)).tail(20)
     tolerance = max(float(ranges.median()) * 0.18, abs(price) * 0.00015, 1e-12)
     sup, res = sr.get("support"), sr.get("resistance")
-    support_touches = sum(abs(float(v)-float(sup)) <= tolerance for _,v in lows[-30:]) if sup is not None else 0
-    resistance_touches = sum(abs(float(v)-float(res)) <= tolerance for _,v in highs[-30:]) if res is not None else 0
+    support_touches = sum(abs(float(v)-float(sup)) <= tolerance for _, v in lows[-30:]) if sup is not None else 0
+    resistance_touches = sum(abs(float(v)-float(res)) <= tolerance for _, v in highs[-30:]) if res is not None else 0
     at_support = sup is not None and abs(price-float(sup)) <= tolerance * 1.8
     at_resistance = res is not None and abs(price-float(res)) <= tolerance * 1.8
     level_direction = "CALL" if at_support and not at_resistance else "PUT" if at_resistance and not at_support else "WAIT"
     touches = support_touches if level_direction == "CALL" else resistance_touches if level_direction == "PUT" else 0
-    level_score = 2 if level_direction != "WAIT" and touches >= 2 else 1 if level_direction != "WAIT" else 0
+    level_score = 2 if level_direction != "WAIT" and touches >= 3 else 1 if level_direction != "WAIT" and touches >= 2 else 0
+    if level_score == 0:
+        level_direction = "WAIT"
 
-    # C — Candle Bible: latest closed 1m candle only; require directional pattern and >50% body.
+    # C: Candle Bible — only the latest completed candle; body must exceed 50%.
     bible = candle_bible_analysis(d)
     patterns = [str(x).upper() for x in bible.get("patterns", [])]
     bull_terms = ("BULLISH ENGULFING", "HAMMER", "PIERCING LINE", "MORNING STAR", "BULLISH MARUBOZU", "THREE WHITE SOLDIERS")
@@ -355,46 +371,57 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     trigger_direction = candle_dir if level_direction == candle_dir and body_ratio > 0.50 else "WAIT"
     trigger_score = 2 if trigger_direction != "WAIT" else 0
 
-    # D — existing Homma/Sakata engine used as confirmation, not independent entry authority.
+    # D: Homma/Sakata is confirmation only. A directional contradiction is a veto.
     sakata = homma_sakata_analysis(d)
     observations = [str(x).upper() for x in sakata.get("observations", [])]
-    d_bull = any("THREE METHODS BULLISH" in x or "THREE PARALLEL LINES" in x and "BULLISH" in x for x in observations)
-    d_bear = any("THREE METHODS BEARISH" in x or "THREE PARALLEL LINES" in x and "BEARISH" in x for x in observations)
+    d_bull = any("THREE METHODS BULLISH" in x or ("THREE PARALLEL LINES" in x and "BULLISH" in x) for x in observations)
+    d_bear = any("THREE METHODS BEARISH" in x or ("THREE PARALLEL LINES" in x and "BEARISH" in x) for x in observations)
     homma_direction = "CALL" if d_bull and not d_bear else "PUT" if d_bear and not d_bull else "WAIT"
-    conf_score = 1 if homma_direction == trigger_direction and trigger_direction != "WAIT" else 0
     disagreement = homma_direction in ("CALL", "PUT") and trigger_direction in ("CALL", "PUT") and homma_direction != trigger_direction
+    conf_score = 1 if homma_direction == trigger_direction and trigger_direction != "WAIT" else -1 if disagreement else 0
 
-    total = score_a + level_score + trigger_score + conf_score
+    # Apply learned multipliers to each module score (bounded to avoid runaway fitting).
+    names = {"A": "THREE STEPS", "B": "SUPPORT / RESISTANCE", "C": "CANDLE BIBLE", "D": "HOMMA / SAKATA"}
+    raw = {"A": score_a, "B": level_score, "C": trigger_score, "D": conf_score}
+    weights = {}
+    learned_weights = learned_weights or {}
+    weighted = {}
+    for key, name in names.items():
+        try:
+            mult = float(learned_weights.get(name, 1.0))
+        except (TypeError, ValueError):
+            mult = 1.0
+        weights[key] = max(0.85, min(1.15, mult))
+        weighted[key] = raw[key] * weights[key]
+    total = sum(weighted.values())
     aligned = direction_a == trigger_direction and direction_a != "WAIT"
-    hard_reasons=[]
-    if direction_a == "WAIT": hard_reasons.append("3-Stairs structure is neutral")
-    if level_direction == "WAIT": hard_reasons.append("price is not at a valid support/resistance level")
-    if trigger_direction == "WAIT": hard_reasons.append("no qualifying closed 1m candle trigger")
-    if disagreement: hard_reasons.append("Homma/Sakata confirmation disagrees")
-    if not aligned: hard_reasons.append("structure and trigger directions do not align")
-    if total < 5: hard_reasons.append("confluence score is below 5")
-
-    # Score tiers are informational signal strength only; no orders are placed.
-    tier = 1.0 if total >= 7 and trigger_score == 2 else 0.75 if total == 6 else 0.50 if total == 5 and trigger_score == 2 else 0.0
+    hard_reasons = []
+    if direction_a == "WAIT": hard_reasons.append("Three-Stairs structure is neutral")
+    if level_direction == "WAIT": hard_reasons.append("price is not at a sufficiently tested support/resistance level")
+    if trigger_direction == "WAIT": hard_reasons.append("no qualifying closed 1-minute trigger candle at the level")
+    if disagreement: hard_reasons.append("Homma/Sakata confirmation directly disagrees")
+    if not aligned: hard_reasons.append("staircase direction and trigger direction do not align")
+    if total < 5.0: hard_reasons.append("weighted confluence score is below 5")
+    tier = 1.0 if total >= 6.5 and trigger_score == 2 and conf_score == 1 else 0.75 if total >= 6.0 else 0.50 if total >= 5.0 and trigger_score == 2 else 0.0
     approved = not hard_reasons and tier > 0
     signal = trigger_direction if approved else "WAIT"
     brains = {
-        "THREE STEPS": {"vote": direction_a, "score": score_a, "detail": "5m confirmed HH/HL or LH/LL structure"},
-        "SUPPORT / RESISTANCE": {"vote": level_direction, "score": level_score, "detail": f"Support touches {support_touches}; resistance touches {resistance_touches}"},
-        "CANDLE BIBLE": {"vote": trigger_direction, "score": trigger_score, "detail": f"Closed 1m body {body_ratio:.0%}; {', '.join(patterns)}"},
-        "HOMMA / SAKATA": {"vote": homma_direction, "score": conf_score, "detail": '; '.join(observations)},
+        "THREE STEPS": {"vote": direction_a, "score": score_a, "weight": weights["A"], "role": "Direction · 5m confirmed HH/HL or LH/LL", "detail": "5m confirmed higher highs/higher lows or lower highs/lower lows"},
+        "SUPPORT / RESISTANCE": {"vote": level_direction, "score": level_score, "weight": weights["B"], "role": "Location · tested level", "detail": f"Support touches {support_touches}; resistance touches {resistance_touches}"},
+        "CANDLE BIBLE": {"vote": trigger_direction, "score": trigger_score, "weight": weights["C"], "role": "Timing · completed 1m trigger", "detail": f"Closed 1m body {body_ratio:.0%}; {', '.join(patterns)}"},
+        "HOMMA / SAKATA": {"vote": homma_direction, "score": conf_score, "weight": weights["D"], "role": "Confirmation · not an entry trigger", "detail": '; '.join(observations) if observations else "No validated directional formation"},
     }
     base.update({
         "signal": signal, "stage": "ENTRY READY" if approved else "SCANNING",
-        "price": price, "candle_time": last.datetime,
-        "brains": brains, "brain_votes": {"CALL": sum(v["vote"]=="CALL" for v in brains.values()), "PUT": sum(v["vote"]=="PUT" for v in brains.values())},
-        "brain_scores": {"CALL": total if signal=="CALL" else 0, "PUT": total if signal=="PUT" else 0},
+        "price": price, "candle_time": last.datetime, "brains": brains,
+        "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in brains.values()), "PUT": sum(v["vote"] == "PUT" for v in brains.values())},
+        "brain_scores": {"CALL": total if signal == "CALL" else 0, "PUT": total if signal == "PUT" else 0},
         "candle_bible": bible, "sakata": sakata, "support_resistance": sr,
         "three_steps_result": {"signal": direction_a, "highs": hs, "lows": ls},
-        "fusion": {"state": "APPROVED" if approved else "BLOCKED", "module_scores": {"A":score_a,"B":level_score,"C":trigger_score,"D":conf_score}, "total_score":total, "size_tier":tier, "block_reasons":hard_reasons},
-        "reason": (f"Adaptive confluence approved · score {total}/7 · indicative size tier {tier:.0%}." if approved else "GHOST blocked this setup: " + '; '.join(hard_reasons)),
+        "fusion": {"state": "APPROVED" if approved else "BLOCKED", "module_scores": raw, "weighted_scores": weighted, "weights": weights, "total_score": total, "size_tier": tier, "block_reasons": hard_reasons},
+        "reason": (f"Adaptive confluence approved · weighted score {total:.2f}/7 · indicative size tier {tier:.0%}." if approved else "GHOST blocked this setup: " + '; '.join(hard_reasons)),
         "entry_point": price if approved else None,
-        "supporting_brains": [name for name,v in brains.items() if v["vote"]==signal] if approved else [],
+        "supporting_brains": [name for name, v in brains.items() if v["vote"] == signal] if approved else [],
     })
     return base
 
@@ -960,6 +987,138 @@ def ghost_protocol(ticks):
         return {**base, "stage": "CANDLE 2 WAITING", "reason": f"{pattern} found. Waiting for Candle 2 to move beyond C1 close at {fmt_price(c1_close)}."}
 
     return {**base, "stage": "SCANNING", "reason": "No valid consecutive C1/C2/C3 sequence at this moment. Continue observing."}
+
+
+# ============================================================
+# GHOST 4.4 — REGIME, MANUAL OUTCOME JOURNAL AND RISK GUARDS
+# ============================================================
+def detect_market_regime(candles):
+    """Completed-candle regime estimate; synthetic tick count is never called volume."""
+    if candles is None or len(candles) < 40:
+        return {"tag": "UNKNOWN", "adx": None, "atr_state": "UNKNOWN", "slope": 0.0}
+    d = candles.copy().reset_index(drop=True)
+    high, low, close = d.high.astype(float), d.low.astype(float), d.close.astype(float)
+    tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
+    up = high.diff(); down = -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    atr = tr.rolling(14).mean()
+    plus_di = 100 * plus_dm.rolling(14).mean() / atr.replace(0, np.nan)
+    minus_di = 100 * minus_dm.rolling(14).mean() / atr.replace(0, np.nan)
+    dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, np.nan)
+    adx = float(dx.rolling(14).mean().iloc[-1]) if pd.notna(dx.rolling(14).mean().iloc[-1]) else 0.0
+    ma = close.ewm(span=20, adjust=False).mean()
+    slope = float((ma.iloc[-1]-ma.iloc[-6]) / max(float(atr.iloc[-1]), 1e-12))
+    recent = float(atr.iloc[-5:].mean()) if atr.iloc[-5:].notna().any() else 0.0
+    prior = float(atr.iloc[-25:-5].mean()) if atr.iloc[-25:-5].notna().any() else recent
+    expanding = recent > prior * 1.10 if prior > 0 else False
+    contracting = recent < prior * 0.90 if prior > 0 else False
+    if adx > 25 and slope > 0.15: tag = "TrendingBull"
+    elif adx > 25 and slope < -0.15: tag = "TrendingBear"
+    elif adx < 20 and expanding: tag = "RangeVolatile"
+    elif adx < 20 and contracting: tag = "LowVolumeChop"
+    else: tag = "TRANSITIONAL"
+    return {"tag": tag, "adx": adx, "atr_state": "EXPANDING" if expanding else "CONTRACTING" if contracting else "STABLE", "slope": slope}
+
+
+def init_trade_journal():
+    with _learning_connect() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS ghost_trade_journal (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+            market TEXT NOT NULL, instrument TEXT NOT NULL, direction TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, regime TEXT NOT NULL, trigger_type TEXT,
+            confirmation TEXT, outcome TEXT NOT NULL, notes TEXT DEFAULT ''
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ghost_trade_fp ON ghost_trade_journal(instrument,fingerprint,regime,created_at)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS ghost_risk_pauses (
+            instrument TEXT PRIMARY KEY, pause_until TEXT NOT NULL, reason TEXT NOT NULL
+        )""")
+
+
+def setup_fingerprint(result, regime):
+    brains = (result or {}).get("brains", {})
+    sr = brains.get("SUPPORT / RESISTANCE", {})
+    cb = brains.get("CANDLE BIBLE", {})
+    hs = brains.get("HOMMA / SAKATA", {})
+    stamp = (result or {}).get("candle_time")
+    try:
+        hour = pd.Timestamp(stamp).hour
+    except Exception:
+        hour = now_cat().hour
+    bucket = "00-05" if hour < 5 else "05-10" if hour < 10 else "10-14" if hour < 14 else "14-18" if hour < 18 else "18-24"
+    return "|".join([str((result or {}).get("signal", "WAIT")), str(sr.get("score", 0)), str(cb.get("detail", "").split(";")[0]), str(hs.get("vote", "WAIT")), bucket, str(regime)])
+
+
+def journal_trade_outcome(market, instrument, result, outcome, regime="UNKNOWN", notes=""):
+    if outcome not in ("WIN", "LOSS", "VOID"):
+        raise ValueError("Outcome must be WIN, LOSS or VOID")
+    init_trade_journal()
+    fp = setup_fingerprint(result, regime)
+    with _learning_connect() as conn:
+        conn.execute("INSERT INTO ghost_trade_journal(created_at,market,instrument,direction,fingerprint,regime,trigger_type,confirmation,outcome,notes) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (now_cat().isoformat(), market, instrument, (result or {}).get("signal", "WAIT"), fp, regime,
+             (result or {}).get("brains", {}).get("CANDLE BIBLE", {}).get("detail", ""),
+             (result or {}).get("brains", {}).get("HOMMA / SAKATA", {}).get("vote", "WAIT"), outcome, notes[:500]))
+    return fp
+
+
+def trade_risk_profile(instrument, fingerprint, regime):
+    init_trade_journal()
+    with _learning_connect() as conn:
+        rows = conn.execute("SELECT outcome,fingerprint,regime FROM ghost_trade_journal WHERE instrument=? AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 200", (instrument,)).fetchall()
+        fp_rows = [r for r in rows if r["fingerprint"] == fingerprint and r["regime"] == regime]
+        consecutive = 0
+        for row in fp_rows:
+            if row["outcome"] == "LOSS": consecutive += 1
+            else: break
+        instrument_losses = 0
+        for row in rows:
+            if row["outcome"] == "LOSS": instrument_losses += 1
+            else: break
+        group = conn.execute("SELECT outcome FROM ghost_trade_journal WHERE instrument=? AND fingerprint=? AND regime=? AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50", (instrument, fingerprint, regime)).fetchall()
+    n = len(group); wins = sum(r["outcome"] == "WIN" for r in group)
+    reliability = (wins / n) if n else None
+    size_cap = 1.0
+    if consecutive >= 5: size_cap = 0.25
+    elif consecutive >= 3: size_cap = 0.50
+    if regime == "LowVolumeChop": size_cap = min(size_cap, 0.25)
+    pause_until = None
+    if instrument_losses >= 5: pause_until = now_cat() + timedelta(hours=4)
+    elif instrument_losses >= 3: pause_until = now_cat() + timedelta(hours=1)
+    if pause_until:
+        with _learning_connect() as conn:
+            conn.execute("INSERT INTO ghost_risk_pauses(instrument,pause_until,reason) VALUES(?,?,?) ON CONFLICT(instrument) DO UPDATE SET pause_until=excluded.pause_until,reason=excluded.reason", (instrument, pause_until.isoformat(), f"{instrument_losses} consecutive instrument losses"))
+    with _learning_connect() as conn:
+        pause = conn.execute("SELECT pause_until,reason FROM ghost_risk_pauses WHERE instrument=?", (instrument,)).fetchone()
+    paused = False; pause_reason = ""
+    if pause:
+        try:
+            until = as_cat(pause["pause_until"]).to_pydatetime()
+            paused = now_cat() < until
+            pause_reason = pause["reason"] if paused else ""
+        except Exception:
+            pass
+    return {"samples": n, "wins": wins, "win_rate": reliability, "size_cap": size_cap,
+            "fingerprint_losses": consecutive, "instrument_losses": instrument_losses,
+            "paused": paused, "pause_reason": pause_reason}
+
+
+def apply_trade_safety(result, market, instrument, candles):
+    """Risk layer can only downgrade an existing signal, never create one."""
+    result = dict(result or {})
+    regime = detect_market_regime(candles)
+    result["market_regime"] = regime
+    if result.get("signal") not in ("CALL", "PUT"):
+        return result
+    fp = setup_fingerprint(result, regime["tag"])
+    risk = trade_risk_profile(instrument, fp, regime["tag"])
+    result["trade_risk"] = risk
+    if risk["paused"]:
+        result.update({"signal": "WAIT", "stage": "RISK PAUSE", "reason": "GHOST risk pause: " + risk["pause_reason"]})
+    elif risk["size_cap"] < 1:
+        result["fusion"] = dict(result.get("fusion", {}), size_tier=min(float(result.get("fusion", {}).get("size_tier", 1.0)), risk["size_cap"]))
+        result["reason"] += f" · Risk size cap {risk['size_cap']:.0%} from recent losses/regime."
+    return result
 
 
 # ============================================================
@@ -1800,6 +1959,8 @@ if run_scan:
                         model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                     result = apply_experience_gate(result, model_cache[model_key], df)
                     result = apply_preparation_gate(result, "GHOST FOUR-BRAIN FOREX", pair, expiry)
+                    if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
+                        st.session_state["ghost_last_candidate"] = {"market": "FOREX", "instrument": pair, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
                     output.append({
                         "instrument": pair,
                         "df": df,
@@ -1884,6 +2045,7 @@ if run_scan:
                 profile = learning_profile("DERIV", GHOST_NAME)
                 result = four_brain_decision(closed_brain_candles, result,
                                              learned_weights=profile["multipliers"], structure_candles=aggregate_timeframe(closed_brain_candles, 5))
+                result = apply_trade_safety(result, "DERIV", GHOST_NAME, closed_brain_candles)
                 result["learning_profile"] = profile
                 record_learning_observation("DERIV", GHOST_NAME, result, candles=closed_brain_candles)
                 resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
@@ -1894,6 +2056,8 @@ if run_scan:
                     model_cache[model_key] = {**trained, "cached_at": int(time.time())}
                 result = apply_experience_gate(result, model_cache[model_key], closed_brain_candles)
                 result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1)
+                if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
+                    st.session_state["ghost_last_candidate"] = {"market": "DERIV", "instrument": GHOST_NAME, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
 
             st.session_state["deriv_output"] = {
                 "instrument": GHOST_NAME, "symbol": GHOST_SYMBOL,
@@ -2020,4 +2184,40 @@ with restore_col:
         except Exception as exc:
             st.error(f"Import failed: {exc}")
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST PROTOCOL · PURPLE / RED / WHITE</div>", unsafe_allow_html=True)
+
+# ============================================================
+# GHOST 4.4 — MANUAL TRADE OUTCOME FEEDBACK
+# ============================================================
+st.divider()
+st.markdown("<div class='ghost-kicker'>GHOST 4.4 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
+_saved_candidate = st.session_state.get("ghost_last_candidate") or {}
+active_result = _saved_candidate.get("result")
+active_instrument = _saved_candidate.get("instrument")
+if active_result and active_instrument and active_result.get("signal") in ("CALL", "PUT"):
+    journal_market = _saved_candidate.get("market", "DERIV" if active_instrument == GHOST_NAME else "FOREX")
+    regime_tag = _saved_candidate.get("regime", "UNKNOWN")
+    outcome_cols = st.columns([1, 1, 2])
+    with outcome_cols[0]:
+        outcome_choice = st.selectbox("Expired trade result", ["WIN", "LOSS", "VOID"], key="ghost_trade_outcome")
+    with outcome_cols[1]:
+        if st.button("SAVE TRADE RESULT", use_container_width=True):
+            try:
+                journal_trade_outcome(journal_market, active_instrument, active_result, outcome_choice, regime_tag)
+                st.success("Outcome saved to GHOST's setup memory.")
+            except Exception as exc:
+                st.error(f"Could not save outcome: {exc}")
+    with outcome_cols[2]:
+        st.caption(f"Instrument: {active_instrument} · Regime: {regime_tag}")
+else:
+    st.caption("A directional setup must be selected before you can attach a manual outcome. Use this after a completed demo trade.")
+try:
+    init_trade_journal()
+    with _learning_connect() as _conn:
+        _journal_rows = _conn.execute("SELECT created_at,instrument,direction,regime,outcome FROM ghost_trade_journal ORDER BY id DESC LIMIT 20").fetchall()
+    if _journal_rows:
+        st.dataframe(pd.DataFrame([dict(r) for r in _journal_rows]), use_container_width=True, hide_index=True)
+except Exception as _journal_exc:
+    st.caption(f"Trade journal is unavailable: {_journal_exc}")
+
+st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.4 · ADAPTIVE CONFLUENCE · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
