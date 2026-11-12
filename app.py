@@ -1,125 +1,96 @@
-                "instrument": GHOST_NAME, "symbol": GHOST_SYMBOL,
-                "ticks": ticks, "candles": candles, "result": result,
-                "feed_status": feed_status,
-                "mtf_history": st.session_state.get("deriv_mtf_history", {}),
-                "mtf_errors": st.session_state.get("deriv_mtf_errors", {}),
-                "last_scan": now_cat().isoformat()
-            }
-            st.session_state["scan_market"] = "deriv"
-            if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
-                existing = st.session_state.get("active_signal")
-                key = (result.get("signal"), str(result.get("candle1_time")), GHOST_NAME)
-                old_key = None if not existing else (existing.get("direction"), existing.get("candle1_time"), existing.get("instrument"))
-                if key != old_key:
-                    st.session_state["active_signal"] = build_signal_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
-            elif result.get("stage") in ("SETUP DEVELOPING", "PREPARE"):
-                prep = build_preparation_record("GHOST PROTOCOL", GHOST_NAME, result, 1)
-                if prep is not None:
-                    st.session_state["active_signal"] = prep
-            else:
-                active = st.session_state.get("active_signal")
-                if active and active.get("instrument") == GHOST_NAME:
-                    st.session_state.pop("active_signal", None)
-            st.session_state.pop("deriv_scan_error", None)
-        except Exception as exc:
-            st.session_state["deriv_scan_error"] = str(exc)
-            st.error(f"GHOST feed/scan issue: {exc}")
+import os
+import json
+import time
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
 
-def render_chart_area():
-    if market.startswith("Pocket"):
-        results = st.session_state.get("scan_output", []) if st.session_state.get("scan_market") == "forex" else []
-        valid = [x for x in results if "error" not in x and x.get("df") is not None and not x["df"].empty]
-        if valid:
-            names = [x["instrument"] for x in valid]
-            selected_name = st.session_state.get("ghost_chart_pair", names[0])
-            if selected_name not in names:
-                selected_name = names[0]
-            selected = next(x for x in valid if x["instrument"] == selected_name)
-            st.plotly_chart(chart(selected["df"], selected_name + " · 1M", selected["result"].get("support_resistance")), use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
-    else:
-        output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
-        if output and output.get("candles") is not None and not output["candles"].empty:
-            st.plotly_chart(chart(output["candles"], GHOST_NAME + " · LIVE 1M", output["result"].get("support_resistance")), use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
-
-
-def selected_result():
-    if market.startswith("Pocket"):
-        results = st.session_state.get("scan_output", []) if st.session_state.get("scan_market") == "forex" else []
-        valid = [x for x in results if "error" not in x]
-        if not valid:
-            return None, None
-        names = [x["instrument"] for x in valid]
-        chosen_name = st.session_state.get("ghost_chart_pair", names[0])
-        if chosen_name not in names:
-            chosen_name = names[0]
-        chosen = next(x for x in valid if x["instrument"] == chosen_name)
-        return chosen["result"], chosen_name
-    output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
-    return (output["result"], GHOST_NAME) if output else (None, None)
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 
 # ============================================================
-# GHOST TRADING INTERFACE — SIGNALS, TIMERS, LIVE CHART, BACKUP
+# CONFIGURATION
 # ============================================================
-active_signal = st.session_state.get("active_signal")
-if active_signal:
-    try:
-        if now_cat() >= datetime.fromisoformat(active_signal["expiry_time"]):
-            st.session_state.pop("active_signal", None)
-            active_signal = None
-    except Exception:
-        st.session_state.pop("active_signal", None)
-        active_signal = None
 
-result, instrument_name = selected_result()
+TZ = ZoneInfo("Africa/Lusaka")
+DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public"
 
-st.markdown("<div class='ghost-kicker'>LIVE SIGNAL PAD</div>", unsafe_allow_html=True)
-show_signal_pad(active_signal)
+GHOST_SYMBOL = "1HZ100V"
+GHOST_NAME = "Volatility 100 (1s) Index"
 
-if result and result.get("stage") in ("PREPARE", "SETUP DEVELOPING") and not active_signal:
-    st.markdown("<div class='signal-card signal-wait'><h3>PREPARE</h3><div class='small-muted'>Potential setup being monitored</div></div>", unsafe_allow_html=True)
+FOREX_PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
+    "AUD/USD", "USD/CAD", "NZD/USD", "EUR/GBP",
+    "EUR/JPY", "GBP/JPY"
+]
 
-st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
-render_chart_area()
+st.set_page_config(
+    page_title="GHOST Protocol 4.3.1",
+    page_icon="📡",
+    layout="wide"
+)
 
-# Detailed intelligence, reasons and model explanations stay in the learning
-# observations; the visible interface only exposes backup and restore controls.
-st.divider()
-st.markdown("<div class='ghost-kicker'>LEARNING DATA · BACKUP & RESTORE</div>", unsafe_allow_html=True)
-cloud_status = st.session_state.get("ghost_cloud_sync_result", {})
-if cloud_status.get("ok"):
-    st.caption(f"Cloud backup synced · uploaded {cloud_status.get('uploaded', 0)} · retrieved {cloud_status.get('downloaded', 0)}")
-elif supabase_cloud_enabled():
-    st.caption("Cloud backup connection is awaiting verification.")
-else:
-    st.caption("Local learning database active · cloud backup not configured.")
-backup_col, restore_col = st.columns(2)
-with backup_col:
-    st.download_button(
-        "DOWNLOAD LEARNING BACKUP",
-        data=learning_export_bytes(),
-        file_name="ghost_learning_history.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-with restore_col:
-    learning_backup = st.file_uploader(
-        "IMPORT LEARNING BACKUP", type=["csv"], key="ghost_learning_restore"
-    )
-    if learning_backup is not None:
-        try:
-            restored = import_learning_csv(learning_backup.getvalue())
-            cloud_result = sync_learning_cloud(upload=True, download=True)
-            if cloud_result.get("ok"):
-                st.success(f"Imported {restored} new observations; cloud backup synchronized.")
-            else:
-                st.warning(f"Imported {restored} observations locally; cloud sync needs attention: {cloud_result.get('message')}")
-        except Exception as exc:
-            st.error(f"Import failed: {exc}")
+st.markdown("""
+<style>
+:root{color-scheme:dark}
+/* Never clip the app: shorter laptop displays must be able to scroll. */
+html,body,[data-testid="stAppViewContainer"],[data-testid="stMain"]{height:auto;min-height:100%;overflow-x:hidden;overflow-y:auto}
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST PROTOCOL · PURPLE / RED / WHITE</div>", unsafe_allow_html=True)
+.stApp{background:radial-gradient(ellipse at 15% 0%,#38205f 0%,#1b102d 44%,#09070f 100%);color:#ffffff;min-height:100vh}
+.block-container{max-width:100%;height:auto;min-height:100vh;overflow:visible;padding:0.35rem .75rem .75rem}
+[data-testid="stSidebar"]{background:#160d24;border-right:1px solid #713c9d}
+[data-testid="stMetric"]{background:linear-gradient(145deg,#32194c,#21142f);border:1px solid #7546a0;padding:9px 12px;border-radius:13px;min-height:88px}
+[data-testid="stMetricLabel"]{color:#eadcf7!important;font-weight:800;letter-spacing:.08em}
+[data-testid="stMetricValue"]{color:#f6f8ff!important;font-weight:900}
+[data-testid="stVerticalBlockBorderWrapper"]{border-color:#33477d!important;border-radius:14px}
+.ghost-hero{background:linear-gradient(105deg,#421b66,#70264f 68%,#26143d);border:1px solid #a45bd0;border-radius:12px;padding:7px 15px;margin:0 0 5px;box-shadow:0 5px 18px #03081788}
+.ghost-kicker{color:#f0d9ff;letter-spacing:2.2px;font-size:10px;font-weight:900}
+.ghost-title{color:#fff;font-size:23px;font-weight:950;letter-spacing:.02em;margin:1px 0}
+.ghost-sub{color:#fff0f7;font-size:12px}
+.signal-card{padding:6px 9px;border-radius:14px;background:linear-gradient(145deg,#32194c,#21142f);border:1px solid #7546a0;margin:4px 0 10px}
+.signal-call{border-left:6px solid #ffffff}.signal-put{border-left:6px solid #ff334f}.signal-wait{border-left:6px solid #9a5bc8}
+.brain-card{background:linear-gradient(145deg,#29143d,#381b43);border:1px solid #7546a0;border-radius:9px;padding:5px 7px;margin:2px 0}
+.brain-name{color:#edcfff;font-size:10px;font-weight:900;letter-spacing:1.2px}
+.brain-state{color:#fff;font-size:12px;font-weight:850;margin:3px 0}
+.brain-detail{color:#f0e8f5;font-size:9px;line-height:1.25}
+.small-muted{color:#b3c0df;font-size:.78rem}
+h1,h2,h3{letter-spacing:-.02em;color:#f7f8ff}
+[data-testid="stPlotlyChart"]{border:1px solid #7546a0;border-radius:10px;overflow:hidden;background:#0d1530;margin-bottom:0!important}
+[data-testid="stMainBlockContainer"]{padding-top:.35rem;overflow:visible}
+section[data-testid="stMain"]{overflow-x:hidden;overflow-y:visible}
+/* Let tab labels wrap instead of hiding the last intelligence panels. */
+[data-testid="stTabs"] [role="tablist"]{flex-wrap:wrap;gap:3px;white-space:normal}
+[data-testid="stTabs"] button[role="tab"]{flex:1 1 auto;white-space:normal;min-height:34px}
+/* Avoid horizontal clipping of wide Streamlit widgets. */
+[data-testid="stHorizontalBlock"]{min-width:0}
+[data-testid="column"]{min-width:0}
+div[data-testid="stHorizontalBlock"]{gap:.55rem}
+.stButton>button{border-radius:11px;border:1px solid #b66bd5;background:linear-gradient(90deg,#7026a6,#b02c55);color:white;font-weight:850;min-height:42px}
+.stButton>button:hover{border-color:#a8b8ff;color:white;box-shadow:0 0 14px #536be866}
+[data-testid="stTabs"] button{font-size:11px!important;font-weight:800!important;padding:4px 8px!important}
+[data-testid="stMetric"]{padding:5px 7px!important;min-height:62px!important}
+[data-testid="stMetricValue"]{font-size:1.15rem!important}
+[data-testid="stVerticalBlock"]{gap:.35rem!important}
+@media(max-width:1100px){
+  .block-container{padding:.45rem .55rem .8rem}
+  .ghost-title{font-size:21px}
+  [data-testid="stTabs"] button[role="tab"]{font-size:10px!important;padding:4px 5px!important}
+}
+@media(max-width:700px){
+  .block-container{padding:.35rem .4rem .8rem}
+  .ghost-title{font-size:19px}
+  .ghost-sub{font-size:10px}
+  [data-testid="stMetric"]{padding:5px 6px!important;min-height:56px!important}
+}
