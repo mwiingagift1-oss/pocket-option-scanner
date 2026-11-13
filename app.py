@@ -1,5 +1,3 @@
-# GHOST Protocol 4.8 Signal Integrity — Refined Brains & Realistic Validation Engine
-
 Import os
 import json
 import time
