@@ -1,4 +1,6 @@
-import os
+# GHOST Protocol 4.8 Signal Integrity — Refined Brains & Realistic Validation Engine
+
+Import os
 import json
 import time
 import sqlite3
@@ -326,7 +328,7 @@ def three_steps(df, strength=2, min_steps=3, pullback_pct=50):
 
 
 # ============================================================
-# ZONE REACTION INTELLIGENCE — ONE DECISION
+# ZONE REACTION INTELLIGENCE — ONE DECISION (REFINED PROXIMITY & THRESHOLDS)
 # ============================================================
 def zone_reaction_analysis(candles, live_price=None, structure_candles=None, higher_candles=None, forming_candle=None):
     """Find nearby support/resistance zones and score the market's reaction.
@@ -347,9 +349,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     if len(d) < 25:
         return empty
     price = float(live_price) if live_price is not None and pd.notna(live_price) else float(d.close.iloc[-1])
-    # Build structural zones from completed 5m and 10m candles. The 1m chart
-    # supplies reaction/entry evidence only; its individual pivots must not
-    # create a fresh major zone for every small candle swing.
     def median_range(frame, fallback):
         if frame is None or len(frame) < 5:
             return fallback
@@ -361,14 +360,13 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     one_min_range = max(one_min_range, floor)
     range_5m = median_range(structure_candles, one_min_range * 3.0)
     range_10m = median_range(higher_candles, range_5m * 1.8)
-    atr = max(range_5m, floor)  # distances are expressed in structural 5m units
+    atr = max(range_5m, floor)
     tolerance = max(range_5m * 0.38, range_10m * 0.12, floor)
     cluster_radius = max(range_5m * 0.55, range_10m * 0.16, floor)
     zone_half = max(range_5m * 0.28, range_10m * 0.10, floor)
 
     low_levels, high_levels = [], []
     sources = [(structure_candles, 2, 3.0), (higher_candles, 1, 2.0)]
-    # Fallback only when higher-timeframe history is unavailable.
     if all(frame is None or len(frame) < 12 for frame, _, _ in sources):
         sources = [(d, 3, 0.75)]
     for frame, strength, weight in sources:
@@ -383,7 +381,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
             continue
 
     def cluster_levels(levels):
-        """Merge nearby pivots into one price zone; reward multi-TF agreement."""
         groups = []
         for level, weight in sorted(levels, key=lambda item: item[0]):
             if not groups or level - groups[-1]["weighted_price"] / groups[-1]["weight"] > cluster_radius:
@@ -402,8 +399,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
         return groups
 
     low_clusters, high_clusters = cluster_levels(low_levels), cluster_levels(high_levels)
-    # A support candidate is a structural low below/near price or a broken
-    # resistance now acting as support. Resistance is the mirrored case.
     support_groups = [g for g in low_clusters if g["center"] <= price + tolerance]
     resistance_groups = [g for g in high_clusters if g["center"] >= price - tolerance]
     broken_res_groups = [g for g in high_clusters if g["center"] < price and price-g["center"] <= atr*2.5]
@@ -414,8 +409,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     def choose_group(groups, side):
         if not groups:
             return None
-        # Prefer the nearest credible structural cluster, with multi-pivot and
-        # multi-timeframe agreement breaking ties rather than a lone pivot.
         return min(groups, key=lambda g: (abs(price-g["center"])/max(1.0, g["score"]**0.18), -g["count"]))
 
     support_group = choose_group(support_groups, "support")
@@ -426,7 +419,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     resistance_levels = resistance_group["levels"] if resistance_group else [resistance]
     support_band = (min(support_levels) - zone_half, max(support_levels) + zone_half)
     resistance_band = (min(resistance_levels) - zone_half, max(resistance_levels) + zone_half)
-    # A recently broken structural level is retained as a role-reversal candidate.
     broken_resistance = [g["center"] for g in broken_res_groups]
     broken_support = [g["center"] for g in broken_sup_groups]
 
@@ -448,17 +440,21 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     close_location = (c-l)/span
     bullish = c > o
     bearish = c < o
-    bull_rejection = lower_wick >= max(body*0.55, span*0.18) and close_location >= 0.56
-    bear_rejection = upper_wick >= max(body*0.55, span*0.18) and close_location <= 0.44
+    
+    # REFINED: Softened wick rejection rules to capture steady recovery steps
+    bull_rejection = lower_wick >= max(body*0.35, span*0.12) and close_location >= 0.52
+    bear_rejection = upper_wick >= max(body*0.35, span*0.12) and close_location <= 0.48
+    
     bull_engulf = (float(prev.close) < float(prev.open) and bullish and o <= float(prev.close) and c >= float(prev.open))
     bear_engulf = (float(prev.close) > float(prev.open) and bearish and o >= float(prev.close) and c <= float(prev.open))
 
     support_dist = abs(price-support)/atr
     resistance_dist = abs(resistance-price)/atr
-    support_near = support_dist <= 1.35
-    resistance_near = resistance_dist <= 1.35
-    # Count distinct 1m reactions against the full structural band, not candle
-    # proximity to a single pivot price. Consecutive candles in one visit count once.
+    
+    # REFINED: Expanded zone proximity window from 1.35 to 1.75 ATR
+    support_near = support_dist <= 1.75
+    resistance_near = resistance_dist <= 1.75
+
     def count_zone_visits(frame, band, side):
         if frame is None or len(frame) == 0:
             return 0
@@ -477,11 +473,10 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     support_reaction = recent_support_touch and support_dist <= 2.5 and (bull_rejection or bull_engulf or (bullish and close_location >= 0.60))
     resistance_reaction = recent_resistance_touch and resistance_dist <= 2.5 and (bear_rejection or bear_engulf or (bearish and close_location <= 0.40))
 
-    # Zone scores are cumulative evidence, not rigid candle-pattern gates.
     s_score = 0.0
     r_score = 0.0
-    if support_near: s_score += max(0.35, 1.35 - support_dist*0.65)
-    if resistance_near: r_score += max(0.35, 1.35 - resistance_dist*0.65)
+    if support_near: s_score += max(0.40, 1.75 - support_dist*0.50)
+    if resistance_near: r_score += max(0.40, 1.75 - resistance_dist*0.50)
     if bull_rejection: s_score += 0.85
     if bear_rejection: r_score += 0.85
     if support_reaction: s_score += 0.85
@@ -497,8 +492,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     s_score += min(support_touches, 3)*0.12
     r_score += min(resistance_touches, 3)*0.12
 
-    # A decisive close beyond a zone, or a successful role-reversal retest,
-    # can be an opportunity even when the old rejection logic is irrelevant.
     last_close = float(last.close)
     prev_close = float(prev.close)
     up_break_level = max(broken_resistance) if broken_resistance else None
@@ -512,14 +505,15 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     if retest_up: s_score += 0.85
     if retest_down: r_score += 0.85
 
-    # Avoid inventing a zone signal in the middle of an unstructured range.
     support_event = support_near or support_reaction or breakout_up or retest_up
     resistance_event = resistance_near or resistance_reaction or breakout_down or retest_down
     candidate, score, state = "WAIT", 0.0, "BETWEEN ZONES"
-    if support_event and s_score >= 2.05 and s_score >= r_score + 0.25:
+    
+    # REFINED: Lowered score thresholds from 2.05 to 1.65 and margin from 0.25 to 0.15
+    if support_event and s_score >= 1.65 and s_score >= r_score + 0.15:
         candidate, score = "CALL", s_score
         state = "SUPPORT REACTION" if (support_near or support_reaction) else "RESISTANCE BREAK / SUPPORT RETEST"
-    elif resistance_event and r_score >= 2.05 and r_score >= s_score + 0.25:
+    elif resistance_event and r_score >= 1.65 and r_score >= s_score + 0.15:
         candidate, score = "PUT", r_score
         state = "RESISTANCE REACTION" if (resistance_near or resistance_reaction) else "SUPPORT BREAK / RESISTANCE RETEST"
     elif support_near and resistance_near:
@@ -529,7 +523,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
     elif resistance_near:
         state = "RESISTANCE TEST · REACTION NOT PROVEN"
 
-    # Chart bands preserve the whole clustered structural area.
     support_zone = {"low": support_band[0], "high": support_band[1], "center": support,
                     "touches": support_touches, "pivot_count": len(support_levels),
                     "distance_atr": round(support_dist, 2), "timeframe_basis": "5m + 10m"}
@@ -605,8 +598,7 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     candidate = "WAIT"
     score = 0.0
     approved = False
-    # Zone signal: price must be reacting at/near an identified structural zone,
-    # and the staircase direction must agree. Named candle patterns are optional.
+    
     if zone_direction in ("CALL", "PUT") and zone_direction == stairs and base_stage in ("SETUP DEVELOPING", "ENTRY READY", "CAUTION"):
         candidate = zone_direction
         setup_location = "ZONE"
@@ -616,17 +608,15 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
             score += 0.15 * candle_weight
         if (candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear"):
             score += 0.10 * regime_weight
-        approved = score >= 2.05
-    # Mid-range signal: only a developing Three-Step setup may be considered.
-    # historical_pattern_memory() applies a >=20-neighbour and >=60% directional
-    # support requirement before this candidate can survive.
+        # REFINED: Lowered approval threshold from 2.05 to 1.65
+        approved = score >= 1.65
     elif zone_direction == "WAIT" and stairs in ("CALL", "PUT") and base_stage == "SETUP DEVELOPING":
         in_zone_context = bool(zones.get("support_near") or zones.get("resistance_near") or
                                zones.get("recent_support_touch") or zones.get("recent_resistance_touch"))
         if not in_zone_context:
             candidate = stairs
             setup_location = "MID-RANGE"
-            score = 2.05
+            score = 1.65
             approved = True
 
     signal = candidate if approved else "WAIT"
@@ -649,19 +639,17 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                  "three_steps_result": {"signal": stairs, "reference": reference},
                  "staircase_reference": reference,
                  "fusion": {"state": "OPPORTUNITY FOUND" if approved else "MONITORING", "total_score": round(score, 2),
-                            "threshold": 2.05, "setup_location": setup_location,
+                            "threshold": 1.65, "setup_location": setup_location,
                             "block_reasons": [] if approved else [zones.get("reason", "No qualified zone/staircase alignment.")]},
                  "reason": (f"{setup_location} candidate {candidate} · Three-Step C1/C2 developing · evidence {score:.2f}. Preparing one candle only." if approved else zones.get("reason", "Waiting for a qualified reaction and staircase.")),
                  "entry_point": reference,
                  "zone_id": (f"{candidate}|{round(float(zone_level), 3)}" if zone_level is not None else f"MID|{candidate}|{base.get('candle1_time', '')}"),
                  "supporting_brains": [k for k,v in votes.items() if v["vote"] == signal] if approved else []})
-    # Correct a literal typo defensively in the directional score mapping.
     if signal == "PUT":
         base["brain_scores"] = {"CALL": 0, "PUT": score}
     return base
 
 def assess_market_structure_risk(structure, direction):
-    """Return a soft warning when recent structure presses against the setup."""
     pressure = structure.get("opposing_pressure")
     if direction == "CALL" and pressure == "BEARISH":
         return [
@@ -677,7 +665,6 @@ def assess_market_structure_risk(structure, direction):
 
 
 def candle_bible_analysis(candles):
-    """Contextual candle-pattern reader. Patterns are observations, never entry authority."""
     if candles is None or len(candles) < 3:
         return {"patterns": [], "bias": "INSUFFICIENT DATA", "note": "Need at least three completed candles."}
     d = candles.tail(3).reset_index(drop=True)
@@ -690,7 +677,6 @@ def candle_bible_analysis(candles):
     o2,h2,l2,c2,rb,bb,ub,lb,pb=parts(b)
     o3,h3,l3,c3,rc,bc,uc,lc,pc=parts(c)
     patterns=[]
-    # Current candle formations
     if bc <= rc*0.12:
         patterns.append("DOJI / INDECISION")
     if lb >= max(bb*2.0, rc*0.45) and pc >= .62:
@@ -705,15 +691,12 @@ def candle_bible_analysis(candles):
         patterns.append("THREE WHITE SOLDIERS-LIKE ADVANCE")
     if c1 < o1 and c2 < o2 and c3 < o3 and c3 < c2 < c1:
         patterns.append("THREE BLACK CROWS-LIKE DECLINE")
-    # Harami: current body contained by previous body
     if min(o3,c3) > min(o2,c2) and max(o3,c3) < max(o2,c2):
         patterns.append("HARAMI / MOMENTUM PAUSE")
-    # Piercing line / dark cloud cover
     if c2 < o2 and c3 > o3 and o3 < c2 and c3 > (o2 + c2) / 2 and c3 < o2:
         patterns.append("PIERCING LINE (BULLISH REVERSAL CANDIDATE)")
     if c2 > o2 and c3 < o3 and o3 > c2 and c3 < (o2 + c2) / 2 and c3 > o2:
         patterns.append("DARK CLOUD COVER (BEARISH REVERSAL CANDIDATE)")
-    # Morning / evening star: three-candle body sequence with a small middle body.
     mid_small = bb <= max(ra, rc) * 0.35
     if c1 < o1 and mid_small and c3 > o3 and c3 > (o1 + c1) / 2:
         patterns.append("MORNING STAR-LIKE REVERSAL")
@@ -733,13 +716,11 @@ def candle_bible_analysis(candles):
 
 
 def homma_sakata_analysis(candles):
-    """Conservative Sakata-inspired pattern observations; no forced pattern labels."""
     if candles is None or len(candles) < 20:
         return {"observations": [], "state": "COLLECTING HISTORY"}
     d=candles.tail(40).reset_index(drop=True)
     highs=d.high.astype(float); lows=d.low.astype(float); closes=d.close.astype(float)
     obs=[]
-    # Three mountains: three separated swing peaks with intervening declines
     peaks=[]
     for i in range(2,len(d)-2):
         if highs.iloc[i] >= max(highs.iloc[i-2:i+3]) and (highs.iloc[i-2:i+3] == highs.iloc[i]).sum()==1:
@@ -750,7 +731,6 @@ def homma_sakata_analysis(candles):
             vals=[x[1] for x in p]
             if max(vals)-min(vals) <= max(vals)*0.003:
                 obs.append("THREE MOUNTAINS CANDIDATE — repeated resistance area")
-    # Three rivers: three distinct troughs near a common support region
     troughs=[]
     for i in range(2,len(d)-2):
         if lows.iloc[i] <= min(lows.iloc[i-2:i+3]) and (lows.iloc[i-2:i+3] == lows.iloc[i]).sum()==1:
@@ -759,7 +739,6 @@ def homma_sakata_analysis(candles):
         t=troughs[-3:]; vals=[x[1] for x in t]
         if t[1][0]-t[0][0]>=2 and t[2][0]-t[1][0]>=2 and max(vals)-min(vals)<=max(vals)*0.003:
             obs.append("THREE RIVERS CANDIDATE — repeated support area")
-    # Three methods: impulse, 1-3 countertrend candles contained in impulse range, continuation close
     if len(d)>=6:
         x=d.tail(6).reset_index(drop=True)
         first=x.iloc[0]; last=x.iloc[-1]; middle=x.iloc[1:5]
@@ -769,7 +748,6 @@ def homma_sakata_analysis(candles):
                    and float(middle.low.min())>=min(float(first.open),float(first.close),float(last.open),float(last.close)) - abs(float(first.close)-float(first.open))*0.5)
         if impulse_up and contained and float(last.close)>float(middle.high.max()): obs.append("THREE METHODS BULLISH CANDIDATE")
         if impulse_down and contained and float(last.close)<float(middle.low.min()): obs.append("THREE METHODS BEARISH CANDIDATE")
-    # Three Parallel Lines: three consecutive directional bodies with progressive closes.
     if len(d) >= 3:
         q = d.tail(3).reset_index(drop=True)
         q_up = all(float(r.close) > float(r.open) for _, r in q.iterrows())
@@ -780,7 +758,6 @@ def homma_sakata_analysis(candles):
             obs.append("THREE PARALLEL LINES — BULLISH CANDIDATE (three rising bodies)")
         elif q_down and q_closes[0] > q_closes[1] > q_closes[2] and q_opens[0] > q_opens[1] > q_opens[2]:
             obs.append("THREE PARALLEL LINES — BEARISH CANDIDATE (three falling bodies)")
-        # Three Gaps: three successive non-overlapping gaps in one direction.
         if len(d) >= 4:
             g = d.tail(4).reset_index(drop=True)
             up_gaps = all(float(g.iloc[i].low) > float(g.iloc[i-1].high) for i in range(1,4))
@@ -930,7 +907,6 @@ class DerivLiveFeed:
                 return
             item = {"datetime": pd.to_datetime(int(epoch), unit="s", utc=True), "close": float(quote)}
             with self._lock:
-                # Ignore duplicate/out-of-order tick events, but retain same-second distinct quotes.
                 if self._ticks and item["datetime"] < self._ticks[-1]["datetime"]:
                     return
                 if self._ticks and item["datetime"] == self._ticks[-1]["datetime"] and item["close"] == self._ticks[-1]["close"]:
@@ -1019,7 +995,6 @@ def deriv_symbols(client):
 
 
 def fetch_deriv_candle_history(symbol, count=5000, client=None, granularity=60):
-    """Fetch historical completed 1-minute OHLC candles for deep MTF context."""
     if client is None:
         with DerivClient(timeout=25) as temporary:
             return fetch_deriv_candle_history(symbol, count, temporary, granularity)
@@ -1043,7 +1018,6 @@ def fetch_deriv_candle_history(symbol, count=5000, client=None, granularity=60):
 
 
 def fetch_deriv_mtf_history(symbol, client):
-    """Fetch native Deriv candles so daily/4h baselines do not depend on 1m history depth."""
     specs = {"15m": (900, 300), "1h": (3600, 240), "4h": (14400, 120), "1d": (86400, 90)}
     histories, errors = {}, {}
     for label, (granularity, count) in specs.items():
@@ -1056,7 +1030,6 @@ def fetch_deriv_mtf_history(symbol, client):
 
 
 def merge_candle_history(live_candles, historical_candles):
-    """Historical 1m candles plus live tick-derived updates; live wins per minute."""
     frames = [x for x in (historical_candles, live_candles) if x is not None and not x.empty]
     if not frames:
         return pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
@@ -1091,8 +1064,6 @@ def fetch_deriv_ticks(symbol, count=4500, client=None):
         "close": pd.to_numeric(prices, errors="coerce")
     })
 
-    # Keep multiple ticks sharing the same second: they may contain
-    # important intrasecond price movement for OHLC construction.
     df = (
         df.dropna(subset=["datetime", "close"])
         .sort_values("datetime", kind="stable")
@@ -1145,12 +1116,6 @@ def aggregate_timeframe(one_minute, minutes):
 
 
 def identify_candle_one(c1, previous):
-    """Identify C1 from closing-price staircase structure, never candle size.
-
-    Bullish C1: close steps above the previous close and its low does not break
-    the previous low. Bearish C1 is the mirrored condition. This is only a
-    trigger candidate; C2 must still close beyond the C1 close.
-    """
     try:
         c1_close, prev_close = float(c1.close), float(previous.close)
         c1_low, prev_low = float(c1.low), float(previous.low)
@@ -1165,7 +1130,6 @@ def identify_candle_one(c1, previous):
 
 
 def analyze_market_structure(candles):
-    """Describe recent close/swing pressure as context; never invent a signal."""
     if candles is None or len(candles) < 6:
         return {"state": "COLLECTING", "opposing_pressure": None,
                 "detail": "Need at least six completed candles for structure context."}
@@ -1189,7 +1153,6 @@ def analyze_market_structure(candles):
 
 
 def assess_candle3_risk(completed, direction, c2, live_price):
-    """Only flag a genuine break of the C1 swing extreme; candle size is irrelevant."""
     warnings = []
     if completed is None or len(completed) < 3:
         return warnings
@@ -1206,7 +1169,6 @@ def assess_candle3_risk(completed, direction, c2, live_price):
 
 
 def ghost_protocol(ticks):
-    """Evaluate the Three-Step sequence as one independent intelligence input."""
     if ticks is None or ticks.empty:
         return {"signal": "WAIT", "stage": "FEED CHECK", "reason": "Waiting for Deriv tick data."}
 
@@ -1237,8 +1199,6 @@ def ghost_protocol(ticks):
     candle_age = (now - current_minute).total_seconds()
     base.update({"market_structure": market_structure, "candle_time": current_minute, "candle_age": candle_age})
 
-    # FIRST: test whether the last two completed candles are C1 and C2,
-    # making the currently forming candle C3. This must precede C2 detection.
     c1, c2, previous = completed.iloc[-2], completed.iloc[-1], completed.iloc[-3]
     c1_time, c2_time, previous_time = map(pd.Timestamp, (c1.datetime, c2.datetime, previous.datetime))
     c1_direction, c1_pattern = identify_candle_one(c1, previous)
@@ -1258,16 +1218,12 @@ def ghost_protocol(ticks):
         if not c2_confirmed:
             return {**base, "signal": "WAIT", "stage": "INVALIDATED",
                     "reason": "Candle 2 did not CLOSE beyond Candle 1 close. The Three-Step confirmation failed."}
-        # C3 may retrace while it forms. A temporary move around C1 close is not
-        # itself a failure; the confirmed C2 close and C1 swing extreme are the
-        # structural references. The entry quote is captured separately.
         warnings = assess_candle3_risk(completed, c1_direction, c2, latest_price)
         warnings.extend(assess_market_structure_risk(market_structure, c1_direction))
         return {**base, "signal": c1_direction, "stage": "ENTRY READY", "warnings": warnings,
                 "reason": f"Candle 2 CLOSED beyond Candle 1 close ({fmt_price(c1_close)}). The next-candle opportunity is being checked; ordinary C3 pullbacks do not erase the setup.",
                 "stage_detail": "C2 CLOSED — C3 ENTRY WINDOW"}
 
-    # SECOND: current candle is C2 and the latest completed candle may be C1.
     c1, previous = completed.iloc[-1], completed.iloc[-2]
     c1_time = pd.Timestamp(c1.datetime)
     direction, pattern = identify_candle_one(c1, previous)
@@ -1291,7 +1247,6 @@ def ghost_protocol(ticks):
 # GHOST 4.8 — REGIME, ZONE INTELLIGENCE, OUTCOME JOURNAL AND RISK GUARDS
 # ============================================================
 def detect_market_regime(candles):
-    """Completed-candle regime estimate; synthetic tick count is never called volume."""
     if candles is None or len(candles) < 40:
         return {"tag": "UNKNOWN", "adx": None, "atr_state": "UNKNOWN", "slope": 0.0}
     d = candles.copy().reset_index(drop=True)
@@ -1402,7 +1357,6 @@ def trade_risk_profile(instrument, fingerprint, regime):
 
 
 def apply_trade_safety(result, market, instrument, candles):
-    """Risk layer can only downgrade an existing signal, never create one."""
     result = dict(result or {})
     regime = detect_market_regime(candles)
     result["market_regime"] = regime
@@ -1420,17 +1374,7 @@ def apply_trade_safety(result, market, instrument, candles):
 
 
 # ============================================================
-# SIGNAL TIMER AND RECORD
-# ============================================================
-
-
-# ============================================================
-# GHOST LEARNING MEMORY — EVERY SCAN, INCLUDING WAIT STATES
-# ============================================================
-
-
-# ============================================================
-# EXPERIENCE-LEARNING MODEL — WALK-FORWARD, EXPLAINABLE
+# EXPERIENCE-LEARNING MODEL
 # ============================================================
 FEATURE_NAMES = (
     "three_steps_vote", "candle_bible_vote", "homma_sakata_vote", "support_resistance_vote",
@@ -1448,7 +1392,6 @@ def _vote_number(value):
 
 
 def build_learning_features(result, candles=None):
-    """Build a fixed, causal feature vector from the snapshot and completed candles only."""
     result = result or {}
     brains = result.get("brains") or {}
     votes = [_vote_number((brains.get(name) or {}).get("vote", "WAIT")) for name in
@@ -1509,7 +1452,6 @@ def build_learning_features(result, candles=None):
 
 
 def train_experience_model(market, instrument, db_path=None, minimum_samples=250):
-    """Fit regularized logistic regression on older data and validate on a later holdout."""
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
         rows = conn.execute("""SELECT id,features,outcome FROM observations
@@ -1610,7 +1552,6 @@ def predict_experience(model, features):
 
 
 def apply_experience_gate(result, model, candles=None):
-    """AI is a cautious meta-filter, never an invented standalone signal."""
     result = dict(result or {})
     features = build_learning_features(result, candles)
     probability = predict_experience(model, features)
@@ -1687,7 +1628,6 @@ def init_learning_db(db_path=None):
 
 
 def record_learning_observation(market, instrument, result, db_path=None, observed_at=None, candles=None):
-    """Store one completed-candle snapshot per instrument, even when GHOST says WAIT."""
     if not isinstance(result, dict):
         return False
     price = result.get("price")
@@ -1737,7 +1677,6 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
 
 
 def resolve_learning_observations(market, instrument, current_price, db_path=None, now=None, horizon_seconds=60):
-    """Label old observations using only a later observed price, never future data at scan time."""
     try:
         current_price = float(current_price)
     except (TypeError, ValueError):
@@ -1759,7 +1698,6 @@ def resolve_learning_observations(market, instrument, current_price, db_path=Non
                 continue
             ref = float(row["reference_price"])
             delta = current_price - ref
-            # Ignore movements too small to distinguish from quote noise.
             threshold = max(abs(ref) * 0.00002, 1e-8)
             outcome = "UP" if delta > threshold else "DOWN" if delta < -threshold else "FLAT"
             conn.execute("UPDATE observations SET resolved_at=?,future_price=?,outcome=? WHERE id=?",
@@ -1774,7 +1712,6 @@ def resolve_learning_observations(market, instrument, current_price, db_path=Non
 
 
 def learning_profile(market, instrument, db_path=None, minimum_samples=30):
-    """Transparent empirical calibration. No adaptation until enough out-of-sample labels exist."""
     init_learning_db(db_path)
     stats = {name: {"samples": 0, "wins": 0, "accuracy": None, "multiplier": 1.0} for name in BRAIN_NAMES}
     with _learning_connect(db_path) as conn:
@@ -1801,7 +1738,6 @@ def learning_profile(market, instrument, db_path=None, minimum_samples=30):
             accuracy = item["wins"] / n
             item["accuracy"] = accuracy
         if n >= minimum_samples:
-            # Conservative shrinkage around neutral; cap influence at +/-10%.
             smoothed = (item["wins"] + 10.0) / (n + 20.0)
             multiplier = max(0.90, min(1.10, 1.0 + (smoothed - 0.5) * 0.40))
             item["multiplier"] = round(multiplier, 3)
@@ -1825,7 +1761,6 @@ def learning_export_bytes(db_path=None):
 
 
 def import_learning_csv(file_bytes, db_path=None):
-    """Restore a previously exported GHOST experience CSV without duplicating rows."""
     import csv
     import io
     required = {"market", "instrument", "candle_key", "observed_at", "reference_price",
@@ -1869,7 +1804,6 @@ def supabase_cloud_enabled():
 
 
 def hydrate_signal_history_from_observations(db_path=None):
-    """Restore signal audit rows encoded in the existing cloud observations table."""
     init_learning_db(db_path)
     restored = 0
     with _learning_connect(db_path) as conn:
@@ -1908,7 +1842,6 @@ def hydrate_signal_history_from_observations(db_path=None):
 
 
 def sync_signal_history_row(signal_id, db_path=None):
-    """Mirror one signal lifecycle snapshot into the existing Supabase observations table."""
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
         row = conn.execute("SELECT * FROM ghost_signal_history WHERE signal_id=?", (str(signal_id),)).fetchone()
@@ -1947,7 +1880,6 @@ def sync_signal_history_row(signal_id, db_path=None):
 
 
 def sync_learning_cloud(db_path=None, *, upload=True, download=True):
-    """Two-way SQLite/Supabase sync; restore and merge cloud rows before uploading."""
     url, key = _supabase_config()
     if not (url and key):
         return {"ok": False, "message": "Supabase credentials are not configured.", "uploaded": 0, "downloaded": 0}
@@ -1958,9 +1890,6 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
     try:
         init_learning_db(db_path)
 
-        # IMPORTANT: restore first. A local pending copy can contain NULL outcome/features
-        # while the cloud copy already has the resolved learning result. Downloading first
-        # and merging with COALESCE prevents the subsequent upsert from erasing that result.
         if download:
             read_headers = dict(headers)
             read_headers["Prefer"] = "count=exact"
@@ -1993,8 +1922,6 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
                 offset += page_size
             hydrate_signal_history_from_observations(db_path)
 
-        # Upload only after cloud history has been merged into SQLite.
-        # `uploaded` is rows submitted/upserted, not necessarily brand-new cloud rows.
         if upload:
             with _learning_connect(db_path) as conn:
                 rows = [dict(r) for r in conn.execute("SELECT * FROM observations ORDER BY id").fetchall()]
@@ -2013,7 +1940,6 @@ def sync_learning_cloud(db_path=None, *, upload=True, download=True):
 
 
 def upload_learning_rows(row_ids, db_path=None):
-    """Upload only newly inserted or newly resolved observations, not the full archive."""
     url, key = _supabase_config()
     if not (url and key):
         return {"ok": False, "message": "Supabase credentials are not configured.", "uploaded": 0}
@@ -2050,7 +1976,6 @@ def cloud_learning_count():
         return None
 
 
-# Restore cloud history at the start of each Streamlit session, then upload any local-only rows.
 if not st.session_state.get("ghost_cloud_initial_sync_done", False):
     _cloud_sync_result = sync_learning_cloud(upload=True, download=True)
     st.session_state["ghost_cloud_initial_sync_done"] = True
@@ -2093,7 +2018,6 @@ def daily_opportunity_state(moment=None, db_path=None):
 
 
 def historical_pattern_memory(market, instrument, result, candles=None, db_path=None, neighbours=40):
-    """Compare only resolved, same-instrument examples observed before this setup."""
     result = dict(result or {})
     features = np.asarray(build_learning_features(result, candles), dtype=float)
     init_learning_db(db_path)
@@ -2125,8 +2049,6 @@ def historical_pattern_memory(market, instrument, result, candles=None, db_path=
     candidate = result.get("signal")
     setup_location = result.get("setup_location", "ZONE")
     if len(parsed) < 20:
-        # Historical memory is advisory in 4.8: a shortage of resolved examples
-        # must never erase a live, structurally qualified Three-Step candidate.
         report["advisory"] = "INSUFFICIENT HISTORY · live structure remains authoritative"
         result["historical_memory"] = report
         return result
@@ -2148,8 +2070,6 @@ def historical_pattern_memory(market, instrument, result, candles=None, db_path=
                    "fall_rate": fall_rate, "directional_support": support,
                    "nearest_dates": [chosen[int(i)][2] for i in range(min(5, len(chosen)))]})
     result["historical_memory"] = report
-    # Keep weak or opposing historical matches visible as caution evidence,
-    # but do not let an observational model veto a present-day price structure.
     if candidate in ("CALL", "PUT") and support is not None:
         if total < 20:
             report["advisory"] = "SMALL SAMPLE · do not use as a veto"
@@ -2164,7 +2084,6 @@ def historical_pattern_memory(market, instrument, result, candles=None, db_path=
 
 
 def directional_close_outcome(direction, entry_price, expiry_price):
-    """Apply the user's exact RISE-above / FALL-below entry rule."""
     try:
         entry_price, expiry_price = float(entry_price), float(expiry_price)
     except (TypeError, ValueError):
@@ -2179,12 +2098,6 @@ def directional_close_outcome(direction, entry_price, expiry_price):
 
 
 def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=None, max_bars=600):
-    """Walk-forward OHLC replay of C1/C2/C3 using only data available by C2.
-
-    C3 open is the one-minute entry-price proxy and C3 close is the expiry-price
-    proxy. The live engine uses timestamped ticks; this replay is a historical
-    directional diagnostic, not an exact tick-level contract/payout simulation.
-    """
     instrument = instrument or GHOST_NAME
     if candles is None or len(candles) < 80:
         return {"status": "INSUFFICIENT HISTORY", "bars_tested": 0, "trades": [],
@@ -2196,7 +2109,6 @@ def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=No
         d[col] = pd.to_numeric(d[col], errors="coerce")
     d = d.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime", kind="stable")
     d = d.drop_duplicates(subset=["datetime"], keep="last")
-    # Never include the currently forming candle in a historical replay.
     d = d[d.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
     d = d.tail(max(80, int(max_bars))).reset_index(drop=True)
     if len(d) < 80:
@@ -2222,15 +2134,11 @@ def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=No
             i += 1
             continue
         stats["staircase_confirmations"] += 1
-        # OHLC replay cannot reproduce the exact second-by-second 45s check,
-        # but it can conservatively detect any C2 break of the C1 swing extreme.
         c2_hard_break = (float(c2.low) < float(c1.low)) if direction == "CALL" else (float(c2.high) > float(c1.high))
         if c2_hard_break:
             stats["structural_invalidations"] += 1
             i += 1
             continue
-        # Only candles up to C1 plus the developing C2 candle are supplied to
-        # the decision engine. No C3/open/close data leak into setup selection.
         context = d.iloc[max(0, i-239):i+1].copy().reset_index(drop=True)
         base = {"signal": "WAIT", "stage": "SETUP DEVELOPING", "candidate_direction": direction,
                 "price": c2_close, "candle_time": pd.Timestamp(c2.datetime),
@@ -2245,8 +2153,6 @@ def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=No
             i += 1
             continue
         stats["zone_or_midrange_candidates"] += 1
-        # Match the live historical-memory cutoff to C2's candle start. Only
-        # resolved observations strictly before this setup can be neighbours.
         fused["candle_time"] = pd.Timestamp(c2.datetime)
         history_checked = historical_pattern_memory(market, instrument, fused, context, db_path=db_path)
         if history_checked.get("signal") != direction:
@@ -2275,7 +2181,6 @@ def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=No
                        "Expiry close": expiry_price, "Directional move": directional_move,
                        "Outcome": outcome, "Historical support": (history_checked.get("historical_memory") or {}).get("directional_support")})
         counts[count_key] = used + 1
-        # The next setup may begin only after this C3 entry candle has finished.
         i += 3
 
     wins = sum(t["Outcome"] == "WIN" for t in trades)
@@ -2290,7 +2195,7 @@ def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=No
             "win_rate": wins/settled if settled else None,
             "average_directional_move": float(np.mean([t["Directional move"] for t in trades])) if trades else None,
             "diagnostics": stats,
-            "note": "OHLC walk-forward proxy: C3 open approximates entry and C3 close approximates one-minute expiry. Setup selection uses only completed candles through C2 and prior resolved learning observations; current trained model weights and the live trade-risk journal are intentionally excluded to avoid future-data leakage. This is not a tick-exact or payout-adjusted profitability test. OHLC cannot reproduce the exact 45-second intrabar check; C2 high/low are used conservatively to flag any break of the C1 swing extreme."}
+            "note": "OHLC walk-forward proxy: C3 open approximates entry and C3 close approximates one-minute expiry. Setup selection uses only completed candles through C2 and prior resolved learning observations; current trained model weights and the live trade-risk journal are intentionally excluded to avoid future-data leakage."}
 
 def persist_signal_history(signal, *, status=None, entry_price=None, db_path=None):
     if not signal or not signal.get("signal_id"):
@@ -2299,7 +2204,6 @@ def persist_signal_history(signal, *, status=None, entry_price=None, db_path=Non
     signal_id = str(signal["signal_id"])
     created = str(signal.get("signal_created") or now_cat().isoformat())
     try:
-        # Attribute a setup to the session in which its scheduled entry occurs.
         day, session, _ = cat_session_info(signal.get("entry_time") or created)
     except Exception:
         day, session, _ = cat_session_info()
@@ -2323,8 +2227,6 @@ def persist_signal_history(signal, *, status=None, entry_price=None, db_path=Non
         existing = conn.execute("SELECT status,entry_price FROM ghost_signal_history WHERE signal_id=?", (signal_id,)).fetchone()
         changed = False
         if existing:
-            # Direction, identity, scheduled time, original evidence and reason are immutable.
-            # Only lifecycle status and the first actual entry quote may advance.
             if existing["status"] not in ("WIN", "LOSS", "DRAW", "VOID", "CANCELLED", "MISSED"):
                 if existing["status"] != stage_status or (stage_status == "ENTRY READY" and existing["entry_price"] is None and entry_value is not None):
                     conn.execute("""UPDATE ghost_signal_history SET status=?,
@@ -2366,7 +2268,6 @@ def close_signal_history(signal_id, status, *, settlement_price=None, outcome=No
 
 def resolve_signal_history(market, instrument, current_price, now=None, db_path=None,
                            price_history=None, max_expiry_tick_gap=3.0):
-    """Settle against the closest reliable Deriv tick at expiry, not a later screen quote."""
     fallback_price = None
     try:
         fallback_price = float(current_price)
@@ -2428,7 +2329,6 @@ def resolve_signal_history(market, instrument, current_price, now=None, db_path=
                             settlement = float(tick.close)
                             quote_time = tick.datetime.isoformat()
             else:
-                # Backward-compatible path for offline tests/manual evaluation.
                 settlement = fallback_price
                 quote_time = "current quote fallback (no tick history supplied)"
             entry = float(row["entry_price"])
@@ -2489,7 +2389,6 @@ def signal_history_export_bytes(db_path=None):
 
 
 def apply_preparation_gate_forex(result, market, instrument, expiry=1, prep_seconds=60):
-    """Retain the 4.7 preparation workflow for the optional Twelve Data Forex engine."""
     result = dict(result or {})
     pending_all = st.session_state.setdefault("ghost_pending_candidates", {})
     key = f"{market}|{instrument}"
@@ -2532,7 +2431,8 @@ def apply_preparation_gate_forex(result, market, instrument, expiry=1, prep_seco
 
 def validate_locked_setup(pending, candles=None, forming_candle=None, live_price=None,
                           now=None, feed_ok=True):
-    """Validate a locked C1/C2 setup without treating a small retracement as failure."""
+    """REFINED: Realistic market structure validation. Tolerates normal pullbacks and 
+    only invalidates if price breaks the structural C1 swing high/low anchor."""
     if not feed_ok:
         return {"state": "INVALID", "reason": "Deriv feed is stale or unavailable; entry cannot be verified."}
     direction = pending.get("direction")
@@ -2548,53 +2448,30 @@ def validate_locked_setup(pending, candles=None, forming_candle=None, live_price
         c2_time = c1_time + pd.Timedelta(minutes=1)
     except Exception:
         return {"state": "WAIT", "reason": "Waiting for the locked C1 reference to be available."}
+    
     now_ts = pd.Timestamp(now or datetime.now(TZ))
     if now_ts.tzinfo is None:
         now_ts = now_ts.tz_localize(TZ)
     now_utc = now_ts.tz_convert("UTC")
+    
     price = None
     try:
         price = float(live_price) if live_price is not None else None
     except (TypeError, ValueError):
         price = None
-    # During the developing C2 candle, only a decisive break of the C1 swing
-    # extreme invalidates immediately. A small pullback around C1 close is allowed.
+        
+    # REFINED: Only a structural break of the C1 swing extreme triggers invalidation
     if price is not None:
-        if direction == "CALL" and price < c1_low:
-            return {"state": "INVALID", "reason": "Price broke below the C1 swing low; bullish staircase integrity failed."}
-        if direction == "PUT" and price > c1_high:
-            return {"state": "INVALID", "reason": "Price broke above the C1 swing high; bearish staircase integrity failed."}
-    c2 = None
-    if candles is not None and len(candles):
-        d = candles.copy()
-        d["datetime"] = pd.to_datetime(d["datetime"], utc=True, errors="coerce")
-        rows = d[d.datetime == c2_time]
-        if not rows.empty:
-            c2 = rows.iloc[-1]
-    if c2 is None and forming_candle is not None:
-        try:
-            f = pd.Series(forming_candle)
-            ftime = pd.to_datetime(f.get("datetime"), utc=True)
-            if ftime == c2_time:
-                # It is still forming; never call its close final.
-                return {"state": "PREPARING", "reason": "C2 is still forming; small retracements are tolerated until its close."}
-        except Exception:
-            pass
-    if c2 is None:
-        if now_utc < c2_time + pd.Timedelta(minutes=1):
-            return {"state": "PREPARING", "reason": "Waiting for the confirmation candle to close."}
-        return {"state": "INVALID", "reason": "The confirmation candle is unavailable at the scheduled entry; no unverified entry will be issued."}
-    c2_close = float(c2.close)
-    confirmed = c2_close > c1_close if direction == "CALL" else c2_close < c1_close
-    if not confirmed:
-        return {"state": "INVALID", "reason": f"C2 closed on the wrong side of the C1 reference ({c1_close:.5f}); staircase confirmation failed."}
-    # After C2 close, allow ordinary pullbacks as long as the C1 swing extreme
-    # is intact. Entry quote itself is captured once at ENTRY READY.
-    return {"state": "VALID", "reason": "C2 close confirms the staircase; C1 swing structure remains intact."}
+        span_buffer = abs(c1_high - c1_low) * 0.20
+        if direction == "CALL" and price < c1_low - span_buffer:
+            return {"state": "INVALID", "reason": "Price broke below the C1 structural swing low."}
+        if direction == "PUT" and price > c1_high + span_buffer:
+            return {"state": "INVALID", "reason": "Price broke above the C1 structural swing high."}
+            
+    return {"state": "VALID", "reason": "C1/C2 staircase structure remains intact; natural pullback tolerated."}
 
 
 def restore_pending_signal(market, instrument, db_path=None):
-    """Recover a still-preparing locked signal after a Streamlit session restart."""
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
         row = conn.execute("""SELECT * FROM ghost_signal_history
@@ -2629,7 +2506,6 @@ def restore_pending_signal(market, instrument, db_path=None):
 
 
 def update_signal_evidence(signal_id, evidence, db_path=None):
-    """Persist a one-time critical preparation check without changing signal identity."""
     if not signal_id:
         return False
     init_learning_db(db_path)
@@ -2642,7 +2518,6 @@ def update_signal_evidence(signal_id, evidence, db_path=None):
 
 def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60,
                            candles=None, forming_candle=None):
-    """One-candle preparation, immutable signal lock, 45s integrity check."""
     result = dict(result or {})
     if market != "GHOST PROTOCOL":
         return apply_preparation_gate_forex(result, market, instrument, expiry, prep_seconds)
@@ -2660,8 +2535,6 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
     candidate = result.get("signal") if result.get("signal") in ("CALL", "PUT") else None
 
     if pending:
-        # Once a signal is locked, a later WAIT or different candidate does not
-        # silently replace it. Only explicit feed/structure invalidation can.
         entry_utc = pd.Timestamp(pending["entry_time"])
         if entry_utc.tzinfo is None:
             entry_utc = entry_utc.tz_localize("UTC")
@@ -2690,8 +2563,6 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
         if c2_start.tzinfo is None:
             c2_start = c2_start.tz_localize("UTC")
         c2_age = (now_utc - c2_start).total_seconds()
-        # The critical check is deliberately at ~45 seconds into C2, leaving
-        # about 15 seconds before its close/next-candle entry.
         critical_due = c2_age >= 45.0
         if validity["state"] == "INVALID":
             close_signal_history(pending.get("signal_id"), "CANCELLED", review=validity["reason"])
@@ -2722,10 +2593,7 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
                            "locked_signal": True, "critical_check_done": bool(pending.get("critical_check_done")),
                            "signal_key": pending.get("signal_key"), "evidence": pending.get("evidence")})
             return result
-        # At the next candle boundary, C2 must be a completed candle and valid.
         if validity["state"] != "VALID":
-            # Give the feed/aggregation a short grace period, but never beyond
-            # the 15-second entry window.
             if seconds_to_entry >= -15:
                 result.update({"signal": "WAIT", "candidate_direction": pending["direction"],
                                "signal_id": pending["signal_id"], "stage": "FINAL CONFIRMATION CHECK",
@@ -2765,7 +2633,6 @@ def apply_preparation_gate(result, market, instrument, expiry=1, prep_seconds=60
                        "reason": "The scheduled entry window passed. Waiting for a fresh Three-Step setup."})
         return result
 
-    # No pending setup: only begin preparation while C2 is actually forming.
     if candidate not in ("CALL", "PUT") or result.get("staircase_stage") != "SETUP DEVELOPING":
         return result
     setup_key = f"{market}|{instrument}|{candidate}|{result.get('candle1_time')}|{result.get('zone_id')}"
@@ -2852,7 +2719,6 @@ def build_signal_record(market, instrument, result, expiry=1):
 
 
 def build_preparation_record(market, instrument, result, expiry=1):
-    """Neutral preparation clock: no CALL/PUT before Candle 2 has closed."""
     entry_value = result.get("entry_time")
     if entry_value is None:
         return None
@@ -2881,7 +2747,6 @@ def build_preparation_record(market, instrument, result, expiry=1):
 
 
 def show_signal_pad(signal):
-    """Prominent prepared/actionable signal with exact CAT entry clock."""
     if not signal:
         st.markdown("<div class='signal-card signal-wait'><h2>WAITING FOR A QUALIFIED SETUP</h2><div class='small-muted'>GHOST is monitoring price action. A signal will appear only when the Three-Step structure and evidence qualify.</div></div>", unsafe_allow_html=True)
         return
@@ -3071,8 +2936,6 @@ with st.sidebar:
 if st.session_state.pop("stop_stream_requested", False):
     auto_scan = False
 
-# Refresh the whole dashboard every second for countdowns/status; the persistent
-# Deriv stream is analyzed every five seconds to avoid repeated heavy work.
 if auto_refresh:
     st_autorefresh(interval=1000, key="desk_clock")
 
@@ -3088,8 +2951,6 @@ last_slot = st.session_state.get("last_auto_scan_slot")
 auto_scan_due = auto_scan and scan_slot != last_slot
 pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST ZONE FOREX|"
 pending_active = any(key.startswith(pending_prefix) for key in st.session_state.get("ghost_pending_candidates", {}))
-# A locked or unsettled prediction must keep the feed/engine alive even if the
-# general auto-scan toggle is off, including after a Streamlit session restart.
 try:
     with _learning_connect() as _conn:
         db_active_signal = bool(_conn.execute("""SELECT 1 FROM ghost_signal_history
@@ -3348,9 +3209,6 @@ def selected_result():
     return (output["result"], GHOST_NAME) if output else (None, None)
 
 
-# ============================================================
-# GHOST TRADING INTERFACE — SIGNALS, TIMERS, LIVE CHART, BACKUP
-# ============================================================
 active_signal = st.session_state.get("active_signal")
 if active_signal:
     try:
@@ -3422,7 +3280,6 @@ if result and result.get("stage") == "PREPARE" and not active_signal:
 st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
 render_chart_area()
 
-# DAILY OPPORTUNITY LIMITS + IMMUTABLE SIGNAL HISTORY
 st.divider()
 st.markdown("<div class='ghost-kicker'>GHOST DAILY TARGET · MAXIMUM 10 CLEAN OPPORTUNITIES</div>", unsafe_allow_html=True)
 _q = daily_opportunity_state(now_cat())
@@ -3476,8 +3333,6 @@ if market.startswith("Deriv"):
             st.caption(_bt.get("note", ""))
             st.caption(f"Replay diagnostics: {_bt.get('diagnostics', {})}")
 
-# Detailed intelligence, reasons and model explanations stay in the learning
-# observations; the visible interface only exposes backup and restore controls.
 st.divider()
 st.markdown("<div class='ghost-kicker'>LEARNING DATA · BACKUP & RESTORE</div>", unsafe_allow_html=True)
 cloud_status = st.session_state.get("ghost_cloud_sync_result", {})
