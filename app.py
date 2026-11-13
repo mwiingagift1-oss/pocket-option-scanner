@@ -3094,8 +3094,8 @@ with st.sidebar:
         st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "Deriv keeps a persistent live tick subscription; the full dashboard refreshes every second and analysis runs every 5 seconds. "
-        "Forex scans once per minute."
+        "Deriv keeps a persistent live tick subscription; the chart refreshes independently every second, "
+        "while dashboard analysis/status refreshes every 5 seconds. Forex scans once per minute."
     )
     st.divider()
 
@@ -3143,10 +3143,10 @@ with st.sidebar:
 if st.session_state.pop("stop_stream_requested", False):
     auto_scan = False
 
-# Refresh the whole dashboard every second for countdowns/status; the persistent
-# Deriv stream is analyzed every five seconds to avoid repeated heavy work.
+# Keep the full dashboard rerun aligned with the five-second analysis cadence.
+# The Deriv chart itself is refreshed independently by a Streamlit fragment below.
 if auto_refresh:
-    st_autorefresh(interval=1000, key="desk_clock")
+    st_autorefresh(interval=5000, key="desk_clock")
 
 now = now_cat()
 st.caption(
@@ -3387,6 +3387,41 @@ if run_scan:
             st.error(f"GHOST feed/scan issue: {exc}")
 
 
+@st.fragment(run_every="1s")
+def render_deriv_live_chart():
+    """Refresh only the Deriv chart from the persistent tick buffer."""
+    output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
+    feed = st.session_state.get("deriv_live_feed")
+    candles = None
+
+    # Build the latest candle view directly from the feed snapshot. This does
+    # not rerun the signal engine or redraw the rest of the dashboard.
+    if feed is not None:
+        try:
+            live_ticks = feed.snapshot()
+            if live_ticks is not None and not live_ticks.empty:
+                live_candles = ticks_to_candles(live_ticks)
+                candles = merge_candle_history(
+                    live_candles, st.session_state.get("deriv_historical_candles")
+                )
+        except Exception:
+            candles = None
+
+    if candles is None or candles.empty:
+        candles = output.get("candles") if output else None
+
+    if candles is not None and not candles.empty:
+        levels = (output or {}).get("result", {}).get("support_resistance")
+        st.plotly_chart(
+            chart(candles, GHOST_NAME + " · LIVE 1M", levels),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key="ghost_deriv_live_chart",
+        )
+    else:
+        st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
+
+
 def render_chart_area():
     if market.startswith("Pocket"):
         results = st.session_state.get("scan_output", []) if st.session_state.get("scan_market") == "forex" else []
@@ -3401,11 +3436,7 @@ def render_chart_area():
         else:
             st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
     else:
-        output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
-        if output and output.get("candles") is not None and not output["candles"].empty:
-            st.plotly_chart(chart(output["candles"], GHOST_NAME + " · LIVE 1M", output["result"].get("support_resistance")), use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
+        render_deriv_live_chart()
 
 
 def selected_result():
