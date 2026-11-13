@@ -629,7 +629,7 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
         if not in_zone_context and micro.get("direction") == stairs:
             candidate = stairs
             setup_location = "MID-RANGE"
-            score = 1.70 + 0.25 + float(micro.get("score", 0.10))
+            score = 1.70 + 0.25 + float(micro.get("score", 0.0))
             approved = score >= 2.05
 
     signal = candidate if approved else "WAIT"
@@ -666,28 +666,38 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
 
 
 def micro_structure_analysis(candles):
-    """Read a short completed-candle close staircase as supporting context only.
+    """Inspect the latest five completed 1m candles for a 3-close micro-stair.
 
-    It never replaces the live C1 trigger / C2 close confirmation / C3 entry
-    sequence and does not use candle size.
+    The five-candle window is the local observation scope. The final three
+    closes inside that window are tested as C1/C2/C3 stepping stones. This is
+    supporting micro-structure evidence only: it never replaces GHOST's main
+    C1 trigger, C2 confirmation and C3 entry sequence. Candle size is ignored.
     """
-    if candles is None or len(candles) < 3:
+    if candles is None or len(candles) < 5:
         return {"direction": "WAIT", "pattern": "NO PATTERN", "score": 0.0,
-                "detail": "Need three completed candles."}
-    d = candles.tail(3).reset_index(drop=True)
+                "detail": "Need five completed 1-minute candles for the micro-structure window."}
+    # Use only the most recent five completed candles, then inspect the final
+    # three closes in that localized window as the micro C1/C2/C3 sequence.
+    window = candles.tail(5).reset_index(drop=True)
     try:
-        c1, c2, c3 = [float(x) for x in d["close"]]
+        closes = pd.to_numeric(window["close"], errors="coerce")
+        c1, c2, c3 = [float(x) for x in closes.iloc[-3:]]
     except (KeyError, TypeError, ValueError):
         return {"direction": "WAIT", "pattern": "NO PATTERN", "score": 0.0,
-                "detail": "Invalid close data."}
-    if c3 > c2 and c2 >= c1:
-        return {"direction": "CALL", "pattern": "MICRO HIGHER-CLOSE STEPS",
-                "score": 0.10, "detail": "Three completed closes show upward progression."}
-    if c3 < c2 and c2 <= c1:
-        return {"direction": "PUT", "pattern": "MICRO LOWER-CLOSE STEPS",
-                "score": 0.10, "detail": "Three completed closes show downward progression."}
+                "detail": "Invalid close data in the latest five-candle window."}
+    if not all(np.isfinite(x) for x in (c1, c2, c3)):
+        return {"direction": "WAIT", "pattern": "NO PATTERN", "score": 0.0,
+                "detail": "Incomplete close values in the latest five-candle window."}
+    if c1 < c2 < c3:
+        return {"direction": "CALL", "pattern": "5-CANDLE WINDOW · 3-STEP HIGHER CLOSES",
+                "score": 0.45,
+                "detail": f"Latest five completed 1m candles checked; final three closes step upward ({c1:g} → {c2:g} → {c3:g})."}
+    if c1 > c2 > c3:
+        return {"direction": "PUT", "pattern": "5-CANDLE WINDOW · 3-STEP LOWER CLOSES",
+                "score": 0.45,
+                "detail": f"Latest five completed 1m candles checked; final three closes step downward ({c1:g} → {c2:g} → {c3:g})."}
     return {"direction": "WAIT", "pattern": "NO PATTERN", "score": 0.0,
-            "detail": "Recent completed closes are not progressing in one direction."}
+            "detail": "The final three closes inside the latest five-candle window do not form a strict one-direction staircase."}
 
 
 def dynamic_volatility_risk_multiplier(candles):
@@ -1439,22 +1449,10 @@ def trade_risk_profile(instrument, fingerprint, regime):
     if consecutive >= 5: size_cap = 0.25
     elif consecutive >= 3: size_cap = 0.50
     if regime == "LowVolumeChop": size_cap = min(size_cap, 0.25)
-    pause_until = None
-    if instrument_losses >= 5: pause_until = now_cat() + timedelta(hours=4)
-    elif instrument_losses >= 3: pause_until = now_cat() + timedelta(hours=1)
-    if pause_until:
-        with _learning_connect() as conn:
-            conn.execute("INSERT INTO ghost_risk_pauses(instrument,pause_until,reason) VALUES(?,?,?) ON CONFLICT(instrument) DO UPDATE SET pause_until=excluded.pause_until,reason=excluded.reason", (instrument, pause_until.isoformat(), f"{instrument_losses} consecutive instrument losses"))
-    with _learning_connect() as conn:
-        pause = conn.execute("SELECT pause_until,reason FROM ghost_risk_pauses WHERE instrument=?", (instrument,)).fetchone()
-    paused = False; pause_reason = ""
-    if pause:
-        try:
-            until = as_cat(pause["pause_until"]).to_pydatetime()
-            paused = now_cat() < until
-            pause_reason = pause["reason"] if paused else ""
-        except Exception:
-            pass
+    # No loss-streak cooldown: keep scanning. Historical losses still reduce
+    # the adaptive size tier above, without suppressing future qualified setups.
+    paused = False
+    pause_reason = ""
     return {"samples": n, "wins": wins, "win_rate": reliability, "size_cap": size_cap,
             "fingerprint_losses": consecutive, "instrument_losses": instrument_losses,
             "paused": paused, "pause_reason": pause_reason}
@@ -1472,20 +1470,17 @@ def apply_trade_safety(result, market, instrument, candles):
     volatility = dynamic_volatility_risk_multiplier(candles)
     result["trade_risk"] = risk
     result["volatility_risk"] = volatility
-    if risk["paused"]:
-        result.update({"signal": "WAIT", "stage": "RISK PAUSE", "reason": "GHOST risk pause: " + risk["pause_reason"]})
-    else:
-        learning_cap = float(risk.get("size_cap", 1.0))
-        volatility_cap = float(volatility.get("multiplier", 1.0))
-        combined_cap = min(1.0, learning_cap, volatility_cap)
-        result["fusion"] = dict(result.get("fusion", {}),
-                                size_tier=min(float(result.get("fusion", {}).get("size_tier", 1.0)), combined_cap))
-        if learning_cap < 1:
-            result["reason"] += f" · Learning/risk size cap {learning_cap:.0%}."
-        if volatility_cap < 1:
-            ratio = volatility.get("ratio")
-            ratio_text = f"{ratio:.2f}× baseline" if ratio is not None else "elevated"
-            result["reason"] += f" · ATR defence {volatility_cap:.0%} size tier ({ratio_text})."
+    learning_cap = float(risk.get("size_cap", 1.0))
+    volatility_cap = float(volatility.get("multiplier", 1.0))
+    combined_cap = min(1.0, learning_cap, volatility_cap)
+    result["fusion"] = dict(result.get("fusion", {}),
+                            size_tier=min(float(result.get("fusion", {}).get("size_tier", 1.0)), combined_cap))
+    if learning_cap < 1:
+        result["reason"] += f" · Learning/risk size cap {learning_cap:.0%}."
+    if volatility_cap < 1:
+        ratio = volatility.get("ratio")
+        ratio_text = f"{ratio:.2f}× baseline" if ratio is not None else "elevated"
+        result["reason"] += f" · ATR defence {volatility_cap:.0%} size tier ({ratio_text})."
     return result
 
 
@@ -2151,17 +2146,16 @@ def cat_session_info(moment=None):
 
 
 def daily_opportunity_state(moment=None, db_path=None):
-    day, session, cap = cat_session_info(moment)
+    """Informational tracker only; never limits or pauses signal issuance."""
+    day, session, _legacy_cap = cat_session_info(moment)
     init_learning_db(db_path)
-    if cap <= 0:
-        return {"date": day, "session": session, "cap": 0, "used": 0, "remaining": 0, "allowed": False}
     with _learning_connect(db_path) as conn:
         used = conn.execute("""SELECT COUNT(*) AS n FROM ghost_signal_history
             WHERE session_date=? AND session_name=?
             AND status IN ('ENTRY READY','PENDING SETTLEMENT','WIN','LOSS','DRAW','VOID')""", (day, session)).fetchone()["n"]
     used = int(used or 0)
-    return {"date": day, "session": session, "cap": cap, "used": used,
-            "remaining": max(0, cap-used), "allowed": used < cap}
+    return {"date": day, "session": session, "cap": None, "used": used,
+            "remaining": None, "allowed": True}
 
 
 def historical_pattern_memory(market, instrument, result, candles=None, db_path=None, neighbours=40):
@@ -3537,15 +3531,14 @@ if result and result.get("stage") == "PREPARE" and not active_signal:
 st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
 render_chart_area()
 
-# DAILY OPPORTUNITY LIMITS + IMMUTABLE SIGNAL HISTORY
+# OPEN SCANNING + IMMUTABLE SIGNAL HISTORY (NO DAILY OR SESSION QUOTA)
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST DAILY TARGET · MAXIMUM 10 CLEAN OPPORTUNITIES</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST CONTINUOUS SCANNING · NO DAILY SIGNAL LIMIT</div>", unsafe_allow_html=True)
 _q = daily_opportunity_state(now_cat())
-_q1, _q2, _q3, _q4 = st.columns(4)
-_q1.metric("MORNING · 06–12", f"{_q['used'] if _q['session']=='MORNING' else daily_opportunity_state(now_cat().replace(hour=8, minute=0, second=0, microsecond=0))['used']}/2")
-_q2.metric("AFTERNOON · 12–18", f"{daily_opportunity_state(now_cat().replace(hour=14, minute=0, second=0, microsecond=0))['used']}/4")
-_q3.metric("EVENING · 18–24", f"{daily_opportunity_state(now_cat().replace(hour=20, minute=0, second=0, microsecond=0))['used']}/4")
-_q4.metric("CURRENT SESSION", f"{_q['remaining']} LEFT" if _q['cap'] else "CLOSED")
+_q1, _q2 = st.columns(2)
+_q1.metric("CURRENT SESSION", _q['session'])
+_q2.metric("ISSUED THIS SESSION", _q['used'])
+st.caption("GHOST scans without a daily or session signal cap. You decide how many signals to follow; qualified signals and outcomes remain recorded.")
 _signal_rows, _signal_totals = signal_history_summary(limit=30)
 _wins = int(_signal_totals.get("wins") or 0); _losses = int(_signal_totals.get("losses") or 0)
 _st1, _st2, _st3, _st4 = st.columns(4)
