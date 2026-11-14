@@ -295,8 +295,7 @@ class OTChartsLiveFeed:
                         line = raw.strip()
                         if not line:
                             if data_lines:
-                                raw_data = "
-".join(data_lines)
+                                raw_data = "\n".join(data_lines)
                                 try:
                                     payload = json.loads(raw_data)
                                 except Exception:
