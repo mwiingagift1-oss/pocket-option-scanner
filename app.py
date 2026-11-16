@@ -824,6 +824,17 @@ def three_stairs_momentum(candles, *, live_price=None, forming_candle=None,
 
     result = dict(empty)
     _signal_key = f"{instrument}|{block_start.isoformat()}|THREE_STAIRS_V1"
+    _cancel_store_key = f"ghost_three_stairs_cancelled:{_signal_key}"
+    def _was_cancelled():
+        try:
+            return bool(st.session_state.get(_cancel_store_key, False))
+        except Exception:
+            return False
+    def _mark_cancelled():
+        try:
+            st.session_state[_cancel_store_key] = True
+        except Exception:
+            pass
     result.update({"price": price, "five_minute_start": block_start,
                    "minute_offset": minute_offset,
                    "entry_time": minute_start.to_pydatetime(),
@@ -859,28 +870,91 @@ def three_stairs_momentum(candles, *, live_price=None, forming_candle=None,
         if live is None:
             result.update({"stage": "WAITING FOR MINUTE 2", "reason": "Minute 1 identified direction; waiting for live minute-2 continuation."})
             return result
+
+        # Minute 2 is monitored while it is forming. A clear reversal, loss of
+        # the minute-1 close, or a two-sided indecision candle cancels preparation
+        # before the minute-3 entry window. A flat opening tick alone is not enough
+        # to cancel; the candle must show actual movement/indecision.
+        live_open = val(live, "open")
+        live_high = val(live, "high")
+        live_low = val(live, "low")
+        live_body = abs(price - live_open)
+        live_range = max(0.0, live_high - live_low)
         live_dir = direction_of(live)
         continues = (price > first_close) if first_dir == "CALL" else (price < first_close)
+        adverse_body = live_dir is not None and live_dir != first_dir
+        lost_first_close = (price <= first_close) if first_dir == "CALL" else (price >= first_close)
+        upper_wick = live_high - max(live_open, price)
+        lower_wick = min(live_open, price) - live_low
+        two_sided_indecision = (
+            live_range > 0
+            and live_body <= 0.25 * live_range
+            and upper_wick >= 0.20 * live_range
+            and lower_wick >= 0.20 * live_range
+        )
+
+        if adverse_body or lost_first_close or two_sided_indecision:
+            _mark_cancelled()
+            reasons = []
+            if adverse_body:
+                reasons.append("minute-2 body turned against the identified direction")
+            if lost_first_close:
+                reasons.append("price lost the minute-1 closing level")
+            if two_sided_indecision:
+                reasons.append("minute 2 is showing two-sided indecision")
+            result.update({"stage": "CANCELLED", "signal": "WAIT",
+                           "candidate_direction": "WAIT", "preparation_cancelled": True,
+                           "reason": "PREPARATION CANCELLED during minute 2: " + "; ".join(reasons) + ". No minute-3 entry will be allowed for this five-minute window."})
+            return result
+
         if live_dir == first_dir and continues:
             result.update({"stage": "PREPARE", "signal": "WAIT",
                            "candidate_direction": first_dir,
+                           "preparation_cancelled": False,
                            "entry_time": (minute_start + pd.Timedelta(minutes=1)).to_pydatetime(),
                            "entry_point": first_close, "staircase_reference": first_close,
-                           "candle2_open": val(live, "open"),
-                           "reason": f"PREPARE {first_dir}: minute 1 identified the direction and live minute 2 is continuing it. Minute 3 is the entry window."})
+                           "candle2_open": live_open,
+                           "reason": f"PREPARE {first_dir}: minute 1 identified the direction and live minute 2 is continuing it without an indecision/reversal warning. Minute 3 is the entry window."})
         else:
-            result.update({"stage": "CONTINUATION CHECK", "reason": f"Minute 1 identified {first_dir}, but minute 2 has not yet continued beyond minute-1 close."})
+            result.update({"stage": "CONTINUATION CHECK", "signal": "WAIT",
+                           "candidate_direction": first_dir,
+                           "reason": f"Minute 1 identified {first_dir}; minute 2 has not yet confirmed clear continuation. No preparation and no entry authorization."})
         return result
 
-    # Minute 3: minute 1 and minute 2 must have closed in the same direction,
-    # with sequential close progression. Candle range/body size is irrelevant.
+    # Minute 3: a minute-2 cancellation is sticky for the remainder of this
+    # five-minute block, even if the candle later recovers before minute 3.
+    if _was_cancelled():
+        result.update({"stage": "CANCELLED", "signal": "WAIT",
+                       "candidate_direction": "WAIT", "preparation_cancelled": True,
+                       "reason": "Minute-2 preparation was cancelled for indecision/reversal. This five-minute window is locked out; wait for the next five-minute candle."})
+        return result
+
+    # Minute 3: minute 1 and minute 2 must close in the same direction,
+    # with sequential close progression. A two-sided indecision candle is invalid.
     if second is None:
         result.update({"stage": "COLLECTING DATA", "reason": "Waiting for the completed second one-minute candle."})
         return result
     second_dir = direction_of(second)
     second_close = val(second, "close")
     second_open = val(second, "open")
+    second_high = val(second, "high")
+    second_low = val(second, "low")
+    second_range = max(0.0, second_high - second_low)
+    second_body = abs(second_close - second_open)
+    second_upper_wick = second_high - max(second_open, second_close)
+    second_lower_wick = min(second_open, second_close) - second_low
+    second_indecision = (
+        second_range > 0
+        and second_body <= 0.25 * second_range
+        and second_upper_wick >= 0.20 * second_range
+        and second_lower_wick >= 0.20 * second_range
+    )
     progression = second_close > first_close if first_dir == "CALL" else second_close < first_close
+    if second_indecision:
+        result.update({"stage": "CANCELLED", "signal": "WAIT",
+                       "candidate_direction": "WAIT", "preparation_cancelled": True,
+                       "reason": "Minute 2 closed with two-sided indecision. Minute-3 entry is cancelled; wait for the next five-minute candle."})
+        return result
     if second_dir != first_dir or not progression:
         result.update({"stage": "INVALIDATED", "candidate_direction": "WAIT",
                        "reason": "Minute 2 did not maintain minute-1 direction and closing-price progression. No minute-3 entry."})
@@ -4125,4 +4199,3 @@ except Exception as _journal_exc:
     st.caption(f"Trade journal is unavailable: {_journal_exc}")
 
 st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.9 · SIGNAL INTEGRITY · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
-
