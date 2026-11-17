@@ -1,8 +1,6 @@
 import os
 import json
 import time
-import threading
-import queue
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -12,8 +10,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import logging
-
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
@@ -30,8 +26,6 @@ except ImportError:
 # ============================================================
 
 TZ = ZoneInfo("Africa/Lusaka")
-logger = logging.getLogger("ghost_protocol")
-BROKER_UTC_OFFSET = pd.Timedelta(hours=2)  # Pocket Option OTC broker wall clock is UTC+2
 DERIV_PUBLIC_WS = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 GHOST_SYMBOL = "1HZ100V"
@@ -44,7 +38,7 @@ FOREX_PAIRS = [
 ]
 
 st.set_page_config(
-    page_title="GHOST Protocol 4.9 Signal Integrity",
+    page_title="GHOST Protocol 4.8 Signal Integrity",
     page_icon="📡",
     layout="wide"
 )
@@ -132,7 +126,7 @@ div[data-testid="stHorizontalBlock"]{gap:.55rem}
 """, unsafe_allow_html=True)
 
 st.markdown("""
-<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.9</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
+<div class="ghost-hero"><div class="ghost-kicker">ZONE INTELLIGENCE · ONE DECISION</div><div class="ghost-title">👻 GHOST PROTOCOL 4.8</div><div class="ghost-sub">SUPPORT / RESISTANCE · PREDICTIVE ENTRY · EXPERIENCE LEARNING</div></div>
 """, unsafe_allow_html=True)
 
 # ============================================================
@@ -177,188 +171,9 @@ def get_secret_api_key():
 
 
 # ============================================================
-# POCKET OPTION OTC — OTCHARTS READ-ONLY MARKET DATA
-# ============================================================
-OTCHARTS_BASE = "https://otcharts.com"
-
-
-def get_otcharts_api_key():
-    try:
-        value = st.secrets.get("OTCHARTS_API_KEY", "")
-    except Exception:
-        value = ""
-    return value or os.getenv("OTCHARTS_API_KEY", "")
-
-
-def otcharts_get(path, api_key, params=None, timeout=20):
-    if not api_key:
-        raise RuntimeError("Enter your OTCharts API key in the OTC panel.")
-    response = requests.get(
-        OTCHARTS_BASE + path,
-        headers={"Authorization": f"Bearer {api_key}", "User-Agent": "GHOST-Protocol/4.9"},
-        params=params or {}, timeout=timeout
-    )
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {"error": response.text[:300]}
-    if not response.ok:
-        detail = payload.get("error") or payload.get("message") or f"HTTP {response.status_code}"
-        raise RuntimeError(f"OTCharts {response.status_code}: {detail}")
-    return payload
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_otc_symbols(api_key):
-    payload = otcharts_get("/v1/symbols", api_key, {"venue": "otc"})
-    return payload.get("symbols", [])
-
-
-def fetch_otc_candles(symbol, api_key, count=300, timeframe=60):
-    payload = otcharts_get("/v1/candles", api_key, {
-        "venue": "otc", "symbol": symbol, "tf": timeframe, "limit": min(int(count), 5000)
-    })
-    rows = payload.get("candles", [])
-    if not rows:
-        raise RuntimeError("OTCharts returned no candles for this instrument.")
-    df = pd.DataFrame(rows)
-    for col in ("open", "high", "low", "close"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    # Pocket Option OTC timestamps are supplied in broker UTC+2 time.
-    df["datetime"] = pd.to_datetime(pd.to_numeric(df["time"], errors="coerce"), unit="s", utc=True) - BROKER_UTC_OFFSET
-    df = df.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime").reset_index(drop=True)
-    df.attrs["gaps"] = payload.get("gaps", {})
-    df.attrs["venue_open"] = payload.get("open", True)
-    return df, payload
-
-
-class OTChartsLiveFeed:
-    """One reconnecting server-sent-events reader for a Pocket Option OTC symbol."""
-    def __init__(self, api_key, symbol):
-        self.api_key = api_key
-        self.symbol = symbol
-        self.events = queue.Queue(maxsize=5000)
-        self.stop_event = threading.Event()
-        self.status = "Connecting to OTCharts live stream…"
-        self.last_tick = None
-        self.thread = threading.Thread(target=self._run, daemon=True, name="ghost-otcharts-sse")
-        self.thread.start()
-
-    def _put(self, item):
-        try:
-            self.events.put_nowait(item)
-        except queue.Full:
-            try:
-                self.events.get_nowait()
-                self.events.put_nowait(item)
-            except queue.Empty:
-                pass
-
-    def _run(self):
-        url = OTCHARTS_BASE + "/v1/stream"
-        headers = {"Authorization": f"Bearer {self.api_key}",
-                   "Accept": "text/event-stream", "Cache-Control": "no-cache",
-                   "User-Agent": "GHOST-Protocol/4.9"}
-        while not self.stop_event.is_set():
-            try:
-                with requests.get(url, headers=headers, params={"venue": "otc", "symbol": self.symbol},
-                                  stream=True, timeout=(15, 35)) as response:
-                    if not response.ok:
-                        try:
-                            detail = response.json().get("error", response.text[:250])
-                        except Exception:
-                            detail = response.text[:250]
-                        message = f"OTCharts {response.status_code}: {detail}"
-                        self.status = message
-                        self._put({"type": "error", "message": message})
-                        # Do not hammer the API when the key or subscription is refused.
-                        if response.status_code in (400, 401, 402, 403):
-                            self.stop_event.set()
-                            return
-                        if response.status_code == 429:
-                            try:
-                                retry_delay = max(5, int(response.headers.get("Retry-After", "30")))
-                            except ValueError:
-                                retry_delay = 30
-                            self.stop_event.wait(retry_delay)
-                            continue
-                        raise RuntimeError(message)
-                    response.encoding = "utf-8"
-                    event_name, data_lines = "message", []
-                    for raw in response.iter_lines(decode_unicode=True):
-                        if self.stop_event.is_set():
-                            break
-                        if raw is None:
-                            continue
-                        if isinstance(raw, bytes):
-                            raw = raw.decode("utf-8", errors="replace")
-                        line = raw.strip()
-                        if not line:
-                            if data_lines:
-                                raw_data = "\n".join(data_lines)
-                                try:
-                                    payload = json.loads(raw_data)
-                                except Exception:
-                                    payload = {"raw": raw_data}
-                                if event_name == "connected":
-                                    self.status = "Connected · waiting for first live tick"
-                                    self._put({"type": "connected", "data": payload})
-                                elif event_name == "tick":
-                                    payload["_event"] = "tick"
-                                    self.last_tick = payload
-                                    self.status = "LIVE · tick received"
-                                    self._put(payload)
-                                elif event_name in ("closed", "dropped", "replaced"):
-                                    self.status = f"Stream notice: {event_name}"
-                                    self._put({"type": event_name, "data": payload})
-                                data_lines = []
-                            event_name = "message"
-                        elif line.startswith("event:"):
-                            event_name = line[6:].strip()
-                        elif line.startswith("data:"):
-                            data_lines.append(line[5:].strip())
-                if not self.stop_event.is_set():
-                    self.status = "Stream ended · reconnecting"
-            except Exception as exc:
-                if not self.stop_event.is_set():
-                    self.status = str(exc)
-                    self._put({"type": "error", "message": str(exc)})
-                    logger.warning("OTCharts stream error: %s", exc)
-            self.stop_event.wait(3)
-
-    def stop(self):
-        self.stop_event.set()
-
-
-def merge_otc_ticks(df, ticks):
-    """Fold live ticks into one-minute OHLC rows without replacing venue history."""
-    if df is None or df.empty or not ticks:
-        return df
-    out = df.copy()
-    for tick in ticks:
-        try:
-            price = float(tick["price"])
-            stamp = pd.to_datetime(float(tick["time"]), unit="s", utc=True) - BROKER_UTC_OFFSET
-            bucket = stamp.floor("min")
-            matches = out.index[out["datetime"] == bucket]
-            if len(matches):
-                idx = matches[-1]
-                out.at[idx, "high"] = max(float(out.at[idx, "high"]), price)
-                out.at[idx, "low"] = min(float(out.at[idx, "low"]), price)
-                out.at[idx, "close"] = price
-            elif bucket > out.iloc[-1]["datetime"]:
-                out.loc[len(out)] = {"datetime": bucket, "open": price, "high": price,
-                                     "low": price, "close": price, "volume": 0}
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
-    return out.sort_values("datetime").tail(5000).reset_index(drop=True)
-
-
-# ============================================================
 # FOREX ENGINE — ZONE-BASED SIGNALS
 # ============================================================
 
-@st.cache_data(ttl=5, show_spinner=False)
 def fetch_forex(symbol, key, count):
     response = requests.get(
         "https://api.twelvedata.com/time_series",
@@ -394,7 +209,12 @@ def fetch_forex(symbol, key, count):
         .reset_index(drop=True)
     )
 
-    return df.tail(count + 2).reset_index(drop=True)
+    cutoff = pd.Timestamp.now(tz="UTC").floor("min")
+    return (
+        df[df.datetime < cutoff]
+        .tail(count)
+        .reset_index(drop=True)
+    )
 
 
 def confirmed_pivots(df, strength):
@@ -733,254 +553,6 @@ def zone_reaction_analysis(candles, live_price=None, structure_candles=None, hig
             "atr": atr, "state": state, "reason": reason, "price": price}
 
 
-
-def three_stairs_momentum(candles, *, live_price=None, forming_candle=None,
-                          instrument="GHOST", now=None):
-    """Three-Stairs Head-of-Wave engine.
-
-    Each five-minute block is evaluated causally:
-      minute 1: identify directional movement;
-      minute 2: confirm continuation and prepare the minute-3 entry;
-      minute 3: issue only after live price crosses beyond minute-2 close.
-    Candle size, support/resistance and the old four-brain fusion are not gates.
-    """
-    now = pd.Timestamp(now or pd.Timestamp.now(tz="UTC"))
-    if now.tzinfo is None:
-        now = now.tz_localize("UTC")
-    else:
-        now = now.tz_convert("UTC")
-    minute_start = now.floor("min")
-    empty = {
-        "signal": "WAIT", "candidate_direction": "WAIT", "stage": "MONITORING",
-        "reason": "Waiting for the first three minutes of a new five-minute momentum window.",
-        "price": float(live_price) if live_price is not None else None,
-        "candle_time": minute_start, "strategy": "THREE_STAIRS_HEAD_OF_WAVE_V1",
-        "brains": {}, "fusion": {"state": "MONITORING"},
-        "three_steps_result": {"signal": "WAIT"}
-    }
-    if candles is None or len(candles) < 1:
-        empty["stage"] = "COLLECTING DATA"
-        empty["reason"] = "Waiting for enough one-minute candles."
-        return empty
-
-    d = candles.copy().reset_index(drop=True)
-    d["datetime"] = pd.to_datetime(d["datetime"], utc=True, errors="coerce")
-    for col in ("open", "high", "low", "close"):
-        d[col] = pd.to_numeric(d[col], errors="coerce")
-    d = d.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime").reset_index(drop=True)
-    if d.empty:
-        return empty
-
-    live = None
-    if forming_candle is not None:
-        try:
-            live_bar = pd.Series(forming_candle)
-            live_bar_time = pd.Timestamp(live_bar["datetime"])
-            live_bar_time = live_bar_time.tz_localize("UTC") if live_bar_time.tzinfo is None else live_bar_time.tz_convert("UTC")
-            if live_bar_time.floor("min") == minute_start:
-                live = live_bar
-        except Exception:
-            live = None
-    if live is None and pd.Timestamp(d.iloc[-1]["datetime"]).floor("min") == minute_start:
-        live = d.iloc[-1]
-        d = d.iloc[:-1].reset_index(drop=True)
-    if live_price is None:
-        try:
-            live_price = float(live["close"]) if live is not None else float(d.iloc[-1]["close"])
-        except Exception:
-            live_price = None
-    try:
-        price = float(live_price)
-    except (TypeError, ValueError):
-        price = None
-    if price is None or not pd.notna(price):
-        empty["reason"] = "Live price unavailable; no entry can be issued."
-        return empty
-
-    block_start = minute_start.floor("5min")
-    minute_offset = int((minute_start - block_start).total_seconds() // 60)
-    # We only act in minutes 1, 2 and 3 of each five-minute candle.
-    if minute_offset not in (0, 1, 2):
-        empty.update({"price": price, "five_minute_start": block_start,
-                      "minute_offset": minute_offset,
-                      "reason": "The first-three-minute entry window has passed. Waiting for the next five-minute candle."})
-        return empty
-
-    by_time = {pd.Timestamp(row.datetime): row for row in d.itertuples(index=False)}
-    first_time = block_start
-    second_time = block_start + pd.Timedelta(minutes=1)
-    first = by_time.get(first_time)
-    second = by_time.get(second_time)
-
-    def direction_of(bar):
-        if bar is None:
-            return None
-        op = float(bar.open if hasattr(bar, "open") else bar["open"])
-        cl = float(bar.close if hasattr(bar, "close") else bar["close"])
-        return "CALL" if cl > op else "PUT" if cl < op else None
-
-    def val(bar, field):
-        return float(getattr(bar, field) if hasattr(bar, field) else bar[field])
-
-    result = dict(empty)
-    _signal_key = f"{instrument}|{block_start.isoformat()}|THREE_STAIRS_V1"
-    _cancel_store_key = f"ghost_three_stairs_cancelled:{_signal_key}"
-    def _was_cancelled():
-        try:
-            return bool(st.session_state.get(_cancel_store_key, False))
-        except Exception:
-            return False
-    def _mark_cancelled():
-        try:
-            st.session_state[_cancel_store_key] = True
-        except Exception:
-            pass
-    result.update({"price": price, "five_minute_start": block_start,
-                   "minute_offset": minute_offset,
-                   "entry_time": minute_start.to_pydatetime(),
-                   "signal_key": _signal_key,
-                   "signal_id": f"TS1-{instrument}-{block_start.strftime('%Y%m%d%H%M')}"})
-
-    if minute_offset == 0:
-        if live is not None:
-            live_dir = direction_of(live)
-            result.update({"candidate_direction": live_dir or "WAIT",
-                           "stage": "IDENTIFYING MOMENTUM" if live_dir else "MONITORING",
-                           "reason": (f"Minute 1: observing {live_dir} movement in the new five-minute candle." if live_dir else
-                                      "Minute 1 has no clear directional movement yet."),
-                           "pattern": "FIVE-MINUTE HEAD-OF-WAVE"})
-        return result
-
-    if first is None:
-        result.update({"stage": "COLLECTING DATA", "reason": "The first one-minute candle of this five-minute window is not available."})
-        return result
-    first_dir = direction_of(first)
-    first_close = val(first, "close")
-    first_open = val(first, "open")
-    result.update({"candle1_time": first_time, "candle1_open": first_open,
-                   "c1_close": first_close, "c1_high": val(first, "high"),
-                   "c1_low": val(first, "low"),
-                   "candidate_direction": first_dir or "WAIT",
-                   "pattern": "THREE-STAIRS HEAD-OF-WAVE"})
-    if first_dir is None:
-        result.update({"reason": "Minute 1 was directionless; no staircase setup.", "stage": "NO DIRECTION"})
-        return result
-
-    if minute_offset == 1:
-        if live is None:
-            result.update({"stage": "WAITING FOR MINUTE 2", "reason": "Minute 1 identified direction; waiting for live minute-2 continuation."})
-            return result
-
-        # Minute 2 is monitored while it is forming. A clear reversal, loss of
-        # the minute-1 close, or a two-sided indecision candle cancels preparation
-        # before the minute-3 entry window. A flat opening tick alone is not enough
-        # to cancel; the candle must show actual movement/indecision.
-        live_open = val(live, "open")
-        live_high = val(live, "high")
-        live_low = val(live, "low")
-        live_body = abs(price - live_open)
-        live_range = max(0.0, live_high - live_low)
-        live_dir = direction_of(live)
-        continues = (price > first_close) if first_dir == "CALL" else (price < first_close)
-        adverse_body = live_dir is not None and live_dir != first_dir
-        lost_first_close = (price <= first_close) if first_dir == "CALL" else (price >= first_close)
-        upper_wick = live_high - max(live_open, price)
-        lower_wick = min(live_open, price) - live_low
-        two_sided_indecision = (
-            live_range > 0
-            and live_body <= 0.25 * live_range
-            and upper_wick >= 0.20 * live_range
-            and lower_wick >= 0.20 * live_range
-        )
-
-        if adverse_body or lost_first_close or two_sided_indecision:
-            _mark_cancelled()
-            reasons = []
-            if adverse_body:
-                reasons.append("minute-2 body turned against the identified direction")
-            if lost_first_close:
-                reasons.append("price lost the minute-1 closing level")
-            if two_sided_indecision:
-                reasons.append("minute 2 is showing two-sided indecision")
-            result.update({"stage": "CANCELLED", "signal": "WAIT",
-                           "candidate_direction": "WAIT", "preparation_cancelled": True,
-                           "reason": "PREPARATION CANCELLED during minute 2: " + "; ".join(reasons) + ". No minute-3 entry will be allowed for this five-minute window."})
-            return result
-
-        if live_dir == first_dir and continues:
-            result.update({"stage": "PREPARE", "signal": "WAIT",
-                           "candidate_direction": first_dir,
-                           "preparation_cancelled": False,
-                           "entry_time": (minute_start + pd.Timedelta(minutes=1)).to_pydatetime(),
-                           "entry_point": first_close, "staircase_reference": first_close,
-                           "candle2_open": live_open,
-                           "reason": f"PREPARE {first_dir}: minute 1 identified the direction and live minute 2 is continuing it without an indecision/reversal warning. Minute 3 is the entry window."})
-        else:
-            result.update({"stage": "CONTINUATION CHECK", "signal": "WAIT",
-                           "candidate_direction": first_dir,
-                           "reason": f"Minute 1 identified {first_dir}; minute 2 has not yet confirmed clear continuation. No preparation and no entry authorization."})
-        return result
-
-    # Minute 3: a minute-2 cancellation is sticky for the remainder of this
-    # five-minute block, even if the candle later recovers before minute 3.
-    if _was_cancelled():
-        result.update({"stage": "CANCELLED", "signal": "WAIT",
-                       "candidate_direction": "WAIT", "preparation_cancelled": True,
-                       "reason": "Minute-2 preparation was cancelled for indecision/reversal. This five-minute window is locked out; wait for the next five-minute candle."})
-        return result
-
-    # Minute 3: minute 1 and minute 2 must close in the same direction,
-    # with sequential close progression. A two-sided indecision candle is invalid.
-    if second is None:
-        result.update({"stage": "COLLECTING DATA", "reason": "Waiting for the completed second one-minute candle."})
-        return result
-    second_dir = direction_of(second)
-    second_close = val(second, "close")
-    second_open = val(second, "open")
-    second_high = val(second, "high")
-    second_low = val(second, "low")
-    second_range = max(0.0, second_high - second_low)
-    second_body = abs(second_close - second_open)
-    second_upper_wick = second_high - max(second_open, second_close)
-    second_lower_wick = min(second_open, second_close) - second_low
-    second_indecision = (
-        second_range > 0
-        and second_body <= 0.25 * second_range
-        and second_upper_wick >= 0.20 * second_range
-        and second_lower_wick >= 0.20 * second_range
-    )
-    progression = second_close > first_close if first_dir == "CALL" else second_close < first_close
-    if second_indecision:
-        result.update({"stage": "CANCELLED", "signal": "WAIT",
-                       "candidate_direction": "WAIT", "preparation_cancelled": True,
-                       "reason": "Minute 2 closed with two-sided indecision. Minute-3 entry is cancelled; wait for the next five-minute candle."})
-        return result
-    if second_dir != first_dir or not progression:
-        result.update({"stage": "INVALIDATED", "candidate_direction": "WAIT",
-                       "reason": "Minute 2 did not maintain minute-1 direction and closing-price progression. No minute-3 entry."})
-        return result
-
-    # Trigger is a live cross beyond the minute-2 close, not candle size.
-    crossed = price > second_close if first_dir == "CALL" else price < second_close
-    if not crossed:
-        result.update({"stage": "ENTRY WATCH", "candidate_direction": first_dir,
-                       "candle2_open": second_open, "candle2_close": second_close,
-                       "entry_point": second_close, "staircase_reference": second_close,
-                       "reason": f"Minute 1 and minute 2 confirm {first_dir}; waiting for live price to cross beyond minute-2 close during minute 3."})
-        return result
-
-    result.update({"signal": first_dir, "candidate_direction": first_dir,
-                   "stage": "ENTRY READY", "entry_time": now.to_pydatetime(),
-                   "candle2_open": second_open, "candle2_close": second_close,
-                   "entry_point": price, "entry_reference_price": price,
-                   "staircase_reference": second_close,
-                   "reason": f"THREE-STAIRS {first_dir} ENTRY · first two one-minute candles maintained five-minute direction; minute-3 price crossed the minute-2 close. Manual entry only.",
-                   "fusion": {"state": "ENTRY READY", "rule": "FIRST_THREE_MINUTES", "size_tier": 1.0},
-                   "three_steps_result": {"signal": first_dir, "reference": second_close},
-                   "brains": {"THREE STAIRS": {"vote": first_dir, "role": "Primary directional and entry engine"}}})
-    return result
-
-
 def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
                         pullback_pct=50, learned_weights=None,
                         structure_candles=None, forming_candle=None):
@@ -1034,31 +606,27 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     candidate = "WAIT"
     score = 0.0
     approved = False
-    # Zone signal: price must be reacting at/near an identified structural zone,
-    # and the staircase direction must agree. Named candle patterns are optional.
-    if zone_direction in ("CALL", "PUT") and zone_direction == stairs and base_stage in ("SETUP DEVELOPING", "ENTRY READY", "CAUTION"):
-        candidate = zone_direction
-        setup_location = "ZONE"
-        score = float(zones.get("candidate_score", 0.0)) * zone_weight
-        score += 0.25 * structure_weight
+    # THREE-STEP AUTHORITY: a valid live C1/C2 developing sequence is the
+    # signal trigger. Structural zones locate the setup and remain visible,
+    # but a missing/opposing zone vote must not suppress the staircase.
+    if stairs in ("CALL", "PUT") and base_stage == "SETUP DEVELOPING":
+        candidate = stairs
+        in_zone_context = bool(
+            (candidate == "CALL" and (zones.get("support_near") or zones.get("recent_support_touch") or zone_direction == "CALL"))
+            or (candidate == "PUT" and (zones.get("resistance_near") or zones.get("recent_resistance_touch") or zone_direction == "PUT"))
+        )
+        setup_location = "ZONE" if in_zone_context else "STRUCTURE"
+        # Scores describe supporting evidence only; they are not a hard gate.
+        score = 1.0
+        if zone_direction == candidate:
+            score += float(zones.get("candidate_score", 0.0)) * zone_weight
         if candle_direction == candidate:
             score += 0.15 * candle_weight
         if micro.get("direction") == candidate:
             score += float(micro.get("score", 0.0)) * structure_weight
         if (candidate == "CALL" and regime.get("tag") == "TrendingBull") or (candidate == "PUT" and regime.get("tag") == "TrendingBear"):
             score += 0.10 * regime_weight
-        approved = score >= 2.05
-    # Mid-range signal: a developing Three-Step setup may qualify only when
-    # recent completed-candle micro progression independently agrees. This
-    # removes the old fixed-score bypass for zone-free setups.
-    elif zone_direction == "WAIT" and stairs in ("CALL", "PUT") and base_stage == "SETUP DEVELOPING":
-        in_zone_context = bool(zones.get("support_near") or zones.get("resistance_near") or
-                               zones.get("recent_support_touch") or zones.get("recent_resistance_touch"))
-        if not in_zone_context and micro.get("direction") == stairs:
-            candidate = stairs
-            setup_location = "MID-RANGE"
-            score = 1.70 + 0.25 + float(micro.get("score", 0.10))
-            approved = score >= 2.05
+        approved = True
 
     signal = candidate if approved else "WAIT"
     votes = {
@@ -1071,7 +639,7 @@ def four_brain_decision(candles, staircase_result, strength=2, min_steps=3,
     zone_level = zones.get("support" if candidate == "CALL" else "resistance") if candidate in ("CALL", "PUT") else None
     base.update({"signal": signal, "candidate_direction": candidate if approved else "WAIT",
                  "staircase_stage": base_stage, "setup_location": setup_location,
-                 "stage": ("ZONE OPPORTUNITY" if setup_location == "ZONE" else "MID-RANGE OPPORTUNITY") if approved else "ZONE MONITORING",
+                 "stage": ("ZONE OPPORTUNITY" if setup_location == "ZONE" else "STAIRCASE SETUP") if approved else "ZONE MONITORING",
                  "price": live_price, "brains": votes,
                  "brain_votes": {"CALL": sum(v["vote"] == "CALL" for v in votes.values()), "PUT": sum(v["vote"] == "PUT" for v in votes.values())},
                  "brain_scores": {"CALL": score if signal == "CALL" else 0, "PUT": score if signal == "PUT" else 0},
@@ -1448,7 +1016,6 @@ class DerivLiveFeed:
                 self._app.run_forever(ping_interval=25, ping_timeout=10)
             except Exception as exc:
                 self._last_error = str(exc)
-                logger.warning("Deriv live feed error: %s", exc)
             self._connected = False
             if self._stop.is_set():
                 break
@@ -1541,6 +1108,7 @@ def fetch_deriv_mtf_history(symbol, client):
             histories[label] = pd.DataFrame(columns=["datetime", "open", "high", "low", "close"])
             errors[label] = str(exc)
     return histories, errors
+
 
 def merge_candle_history(live_candles, historical_candles):
     """Historical 1m candles plus live tick-derived updates; live wins per minute."""
@@ -1722,7 +1290,21 @@ def ghost_protocol(ticks):
 
     market_structure = analyze_market_structure(completed)
     candle_age = (now - current_minute).total_seconds()
-    base.update({"market_structure": market_structure, "candle_time": current_minute, "candle_age": candle_age})
+    # Deriv synthetic indices expose tick quotes, not traded-volume bars.
+    # Record recent tick activity and uptick/downtick pressure as a live proxy.
+    recent_ticks = ticks[ticks.datetime >= latest_tick - pd.Timedelta(seconds=10)].tail(500)
+    tick_changes = recent_ticks.close.astype(float).diff().dropna()
+    tick_activity = {
+        "window_seconds": 10,
+        "ticks": int(len(recent_ticks)),
+        "upticks": int((tick_changes > 0).sum()),
+        "downticks": int((tick_changes < 0).sum()),
+        "unchanged": int((tick_changes == 0).sum()),
+        "pressure": "BUYER TICK PRESSURE" if (tick_changes > 0).sum() > (tick_changes < 0).sum() else
+                    "SELLER TICK PRESSURE" if (tick_changes < 0).sum() > (tick_changes > 0).sum() else "BALANCED TICK ACTIVITY"
+    }
+    base.update({"market_structure": market_structure, "candle_time": current_minute,
+                 "candle_age": candle_age, "tick_activity": tick_activity})
 
     # FIRST: test whether the last two completed candles are C1 and C2,
     # making the currently forming candle C3. This must precede C2 detection.
@@ -1931,10 +1513,13 @@ def apply_trade_safety(result, market, instrument, candles):
 # EXPERIENCE-LEARNING MODEL — WALK-FORWARD, EXPLAINABLE
 # ============================================================
 FEATURE_NAMES = (
-    "direction_vote", "minute_offset", "minute1_body_atr", "minute2_body_atr",
-    "close_progression_atr", "entry_cross_distance_atr", "return_1_atr",
-    "return_3_atr", "return_5_atr", "ema_spread_atr", "body_fraction",
-    "close_location", "range_atr", "hour_sin", "hour_cos"
+    "three_steps_vote", "candle_bible_vote", "homma_sakata_vote", "support_resistance_vote",
+    "call_score", "put_score", "score_margin",
+    "body_fraction", "upper_wick_fraction", "lower_wick_fraction", "close_location",
+    "return_1_atr", "return_3_atr", "return_5_atr", "ema_spread_atr",
+    "support_distance_atr", "resistance_distance_atr",
+    "candle_pattern_bias", "sakata_pattern_bias", "hour_sin", "hour_cos",
+    "zone_support_evidence", "zone_resistance_evidence", "zone_support_nearness", "zone_resistance_nearness"
 )
 
 
@@ -1943,56 +1528,61 @@ def _vote_number(value):
 
 
 def build_learning_features(result, candles=None):
-    """Causal Three-Stairs features; legacy four-brain feature rows are not reused."""
+    """Build a fixed, causal feature vector from the snapshot and completed candles only."""
     result = result or {}
-    direction = result.get("candidate_direction") or result.get("signal", "WAIT")
-    direction_vote = _vote_number(direction)
-    minute_offset = float(result.get("minute_offset", 0) or 0)
-    vals = [0.0] * 11
-    hour = now_cat().hour
-    if candles is not None and len(candles) >= 2:
+    brains = result.get("brains") or {}
+    votes = [_vote_number((brains.get(name) or {}).get("vote", "WAIT")) for name in
+             ("ZONE REACTION", "MARKET STRUCTURE", "CANDLE BEHAVIOUR", "MARKET REGIME")]
+    scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
+    call_score = float(scores.get("CALL", 0) or 0)
+    put_score = float(scores.get("PUT", 0) or 0)
+    vals = []
+    if candles is not None and len(candles) >= 6:
         d = candles.copy().reset_index(drop=True)
-        for col in ("open", "high", "low", "close"):
-            d[col] = pd.to_numeric(d[col], errors="coerce")
-        d = d.dropna(subset=["open", "high", "low", "close"])
-        if len(d) >= 2:
-            last = d.iloc[-1]
-            close = float(last.close)
-            span = max(float(last.high) - float(last.low), 1e-12)
-            atr = max(float((d.high - d.low).tail(20).mean()), abs(close) * 1e-8, 1e-12)
-            body = float(last.close) - float(last.open)
-            close_loc = (close - float(last.low)) / span
-            returns = []
-            for n in (1, 3, 5):
-                prev = float(d.close.iloc[-1-n]) if len(d) > n else close
-                returns.append((close - prev) / atr)
-            ema9 = float(d.close.ewm(span=9, adjust=False).mean().iloc[-1])
-            ema21 = float(d.close.ewm(span=21, adjust=False).mean().iloc[-1])
-            try:
-                stamp = pd.Timestamp(result.get("candle_time", last.datetime))
-                hour = stamp.hour + stamp.minute / 60.0
-            except Exception:
-                pass
-            c1_open = float(result.get("candle1_open", result.get("c1_close", close)))
-            c1_close = float(result.get("c1_close", close))
-            c2_open = float(result.get("candle2_open", c1_close))
-            c2_close = float(result.get("candle2_close", c1_close))
-            entry_price = float(result.get("entry_point", result.get("price", close)) or close)
-            direction_sign = direction_vote if direction_vote else 1.0
-            vals = [
-                (c1_close-c1_open)/atr,
-                (c2_close-c2_open)/atr,
-                direction_sign*(c2_close-c1_close)/atr,
-                direction_sign*(entry_price-c2_close)/atr,
-                *returns,
-                (ema9-ema21)/atr,
-                body/span,
-                close_loc,
-                span/atr,
-            ]
-    vector = np.asarray([direction_vote, minute_offset] + vals + [
-        np.sin(2*np.pi*hour/24), np.cos(2*np.pi*hour/24)
-    ], dtype=float)
+        last = d.iloc[-1]
+        close = float(last.close)
+        span = max(float(last.high) - float(last.low), 1e-12)
+        atr = float((d.high - d.low).tail(20).mean())
+        atr = max(atr, abs(close) * 1e-8, 1e-12)
+        body = float(last.close) - float(last.open)
+        upper = float(last.high) - max(float(last.open), float(last.close))
+        lower = min(float(last.open), float(last.close)) - float(last.low)
+        close_loc = (close - float(last.low)) / span
+        returns = []
+        for n in (1, 3, 5):
+            prev = float(d.close.iloc[-1-n])
+            returns.append((close - prev) / atr)
+        ema9 = float(d.close.ewm(span=9, adjust=False).mean().iloc[-1])
+        ema21 = float(d.close.ewm(span=21, adjust=False).mean().iloc[-1])
+        sr = result.get("support_resistance") or {}
+        support = sr.get("support")
+        resistance = sr.get("resistance")
+        sd = (close - float(support)) / atr if support is not None else 10.0
+        rd = (float(resistance) - close) / atr if resistance is not None else 10.0
+        try:
+            stamp = pd.Timestamp(last.datetime)
+            hour = stamp.hour + stamp.minute / 60.0
+        except Exception:
+            hour = now_cat().hour
+        patterns = " ".join(str(x).upper() for x in (result.get("candle_bible") or {}).get("patterns", []))
+        sakata = " ".join(str(x).upper() for x in (result.get("sakata") or {}).get("observations", []))
+        candle_bias = 1.0 if any(x in patterns for x in ("BULLISH", "HAMMER", "MORNING STAR")) else -1.0 if any(x in patterns for x in ("BEARISH", "SHOOTING", "EVENING STAR")) else 0.0
+        sakata_bias = 1.0 if "BULLISH" in sakata else -1.0 if "BEARISH" in sakata else 0.0
+        vals = [body/span, upper/span, lower/span, close_loc, *returns,
+                (ema9-ema21)/atr, max(-10,min(10,sd)), max(-10,min(10,rd)),
+                candle_bias, sakata_bias, np.sin(2*np.pi*hour/24), np.cos(2*np.pi*hour/24)]
+    else:
+        vals = [0.0] * 14
+    zone = result.get("zone_analysis") or {}
+    sz = zone.get("support_zone") or {}
+    rz = zone.get("resistance_zone") or {}
+    zone_features = [
+        min(5.0, float(zone.get("support_score", 0) or 0)),
+        min(5.0, float(zone.get("resistance_score", 0) or 0)),
+        max(-10.0, min(10.0, float(sz.get("distance_atr", 10) or 10))),
+        max(-10.0, min(10.0, float(rz.get("distance_atr", 10) or 10))),
+    ]
+    vector = np.asarray(votes + [call_score, put_score, call_score-put_score] + vals + zone_features, dtype=float)
     if vector.size != len(FEATURE_NAMES):
         vector = np.resize(vector, len(FEATURE_NAMES))
     return np.nan_to_num(vector, nan=0.0, posinf=0.0, neginf=0.0).tolist()
@@ -2106,7 +1696,7 @@ def apply_experience_gate(result, model, candles=None):
     probability = predict_experience(model, features)
     model_view = {k:v for k,v in (model or {}).items() if k not in ("weights","mean","scale")}
     model_view["probability_up"] = probability
-    model_view["feature_schema"] = "GHOST_THREE_STAIRS_MOMENTUM_V1"
+    model_view["feature_schema"] = "GHOST_4_6_ZONE_V1"
     result["experience_ai"] = model_view
     candidate = result.get("signal")
     if probability is not None and candidate in ("CALL","PUT"):
@@ -2120,15 +1710,12 @@ def apply_experience_gate(result, model, candles=None):
 
 
 LEARNING_DB = os.getenv("GHOST_DB_PATH", "ghost_learning.sqlite3")
-BRAIN_NAMES = ("THREE STAIRS",)
+BRAIN_NAMES = ("ZONE REACTION", "MARKET STRUCTURE", "CANDLE BEHAVIOUR", "MARKET REGIME")
 
 
 @contextmanager
 def _learning_connect(db_path=None):
     conn = sqlite3.connect(db_path or LEARNING_DB, timeout=20)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=20000")
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -2198,8 +1785,6 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
     candle_key = str(result.get("candle_time") or stamp_text[:16])
     brains = result.get("brains") or {}
     votes = {name: str((brains.get(name) or {}).get("vote", "WAIT")) for name in BRAIN_NAMES}
-    if votes.get("THREE STAIRS") == "WAIT":
-        votes["THREE STAIRS"] = str(result.get("candidate_direction", "WAIT"))
     scores = result.get("brain_scores") or (result.get("fusion") or {}).get("scores") or {}
     features = build_learning_features(result, candles)
     evidence = {
@@ -2215,17 +1800,9 @@ def record_learning_observation(market, instrument, result, db_path=None, observ
     }
     init_learning_db(db_path)
     with _learning_connect(db_path) as conn:
-        cur = conn.execute("""INSERT INTO observations
+        cur = conn.execute("""INSERT OR IGNORE INTO observations
             (market,instrument,candle_key,observed_at,reference_price,brain_votes,brain_scores,state,evidence,features)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(market,instrument,candle_key) DO UPDATE SET
-                reference_price=excluded.reference_price,
-                brain_votes=excluded.brain_votes,
-                brain_scores=excluded.brain_scores,
-                state=excluded.state,
-                evidence=excluded.evidence,
-                features=excluded.features
-            WHERE excluded.state='ENTRY READY' AND observations.state!='ENTRY READY'""",
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (market, instrument, candle_key, stamp_text, price,
              json.dumps(votes), json.dumps(scores), str(result.get("stage", "SCANNING")),
              json.dumps(evidence, default=str), json.dumps(features)))
@@ -2684,95 +2261,118 @@ def directional_close_outcome(direction, entry_price, expiry_price):
 
 
 def run_historical_backtest(candles, market="DERIV", instrument=None, db_path=None, max_bars=600):
-    """Walk-forward OHLC validation of the Three-Stairs first-three-minute rule.
+    """Walk-forward OHLC replay of C1/C2/C3 using only data available by C2.
 
-    For each 5-minute block: minute 1 identifies direction, minute 2 must
-    continue and close beyond minute 1, minute 3 must cross beyond minute-2
-    close. Minute 4 close is an approximate 60-second expiry proxy. OHLC bars
-    cannot recover the exact tick/time of the crossing, so results are
-    diagnostic rather than a tick-exact payout backtest.
+    C3 open is the one-minute entry-price proxy and C3 close is the expiry-price
+    proxy. The live engine uses timestamped ticks; this replay is a historical
+    directional diagnostic, not an exact tick-level contract/payout simulation.
     """
     instrument = instrument or GHOST_NAME
-    empty = {"status": "INSUFFICIENT HISTORY", "bars_tested": 0, "trades": [],
-             "wins": 0, "losses": 0, "draws": 0, "zone_signals": 0,
-             "midrange_signals": 0, "win_rate": None}
     if candles is None or len(candles) < 80:
-        return {**empty, "note": "At least 80 completed one-minute candles are required."}
+        return {"status": "INSUFFICIENT HISTORY", "bars_tested": 0, "trades": [],
+                "wins": 0, "losses": 0, "draws": 0, "zone_signals": 0, "midrange_signals": 0,
+                "win_rate": None, "note": "At least 80 completed one-minute candles are required."}
     d = candles.copy()
     d["datetime"] = pd.to_datetime(d["datetime"], utc=True, errors="coerce")
     for col in ("open", "high", "low", "close"):
         d[col] = pd.to_numeric(d[col], errors="coerce")
-    d = d.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime").drop_duplicates("datetime", keep="last")
-    d = d[d.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")].tail(max(80, int(max_bars))).reset_index(drop=True)
+    d = d.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime", kind="stable")
+    d = d.drop_duplicates(subset=["datetime"], keep="last")
+    # Never include the currently forming candle in a historical replay.
+    d = d[d.datetime + pd.Timedelta(minutes=1) <= pd.Timestamp.now(tz="UTC")]
+    d = d.tail(max(80, int(max_bars))).reset_index(drop=True)
     if len(d) < 80:
-        return {**empty, "bars_tested": len(d), "note": "Not enough clean completed one-minute candles."}
+        return {"status": "INSUFFICIENT HISTORY", "bars_tested": len(d), "trades": [],
+                "wins": 0, "losses": 0, "draws": 0, "zone_signals": 0, "midrange_signals": 0,
+                "win_rate": None, "note": "Not enough clean completed candles after timestamp/price validation."}
 
-    by_time = {pd.Timestamp(row.datetime): row for row in d.itertuples(index=False)}
     trades = []
-    stats = {"five_minute_windows_checked": 0, "minute1_directions": 0,
-             "minute2_confirmations": 0, "minute3_price_crosses": 0,
-             "minute2_reversals": 0, "no_entry_cross": 0}
-    for block_start in d.datetime:
-        block_start = pd.Timestamp(block_start)
-        if block_start.minute % 5 != 0 or block_start.second != 0:
+    counts = {}
+    stats = {"staircase_confirmations": 0, "zone_or_midrange_candidates": 0,
+             "historical_vetoes": 0, "structural_invalidations": 0, "session_cap_skips": 0}
+    i = 30
+    while i < len(d)-2:
+        c1, previous, c2, c3 = d.iloc[i], d.iloc[i-1], d.iloc[i+1], d.iloc[i+2]
+        direction, pattern = identify_candle_one(c1, previous)
+        if direction not in ("CALL", "PUT"):
+            i += 1
             continue
-        t1 = block_start
-        t2 = t1 + pd.Timedelta(minutes=1)
-        t3 = t1 + pd.Timedelta(minutes=2)
-        t4 = t1 + pd.Timedelta(minutes=3)
-        c1, c2, c3, c4 = (by_time.get(t) for t in (t1, t2, t3, t4))
-        if any(c is None for c in (c1, c2, c3, c4)):
+        c1_close = float(c1.close)
+        c2_close = float(c2.close)
+        c2_confirmed = c2_close > c1_close if direction == "CALL" else c2_close < c1_close
+        if not c2_confirmed:
+            i += 1
             continue
-        stats["five_minute_windows_checked"] += 1
-        o1, cl1 = float(c1.open), float(c1.close)
-        o2, cl2 = float(c2.open), float(c2.close)
-        if cl1 > o1:
-            direction = "CALL"
-        elif cl1 < o1:
-            direction = "PUT"
-        else:
+        stats["staircase_confirmations"] += 1
+        # OHLC replay cannot reproduce the exact second-by-second 45s check,
+        # but it can conservatively detect any C2 break of the C1 swing extreme.
+        c2_hard_break = (float(c2.low) < float(c1.low)) if direction == "CALL" else (float(c2.high) > float(c1.high))
+        if c2_hard_break:
+            stats["structural_invalidations"] += 1
+            i += 1
             continue
-        stats["minute1_directions"] += 1
-        second_direction = "CALL" if cl2 > o2 else "PUT" if cl2 < o2 else None
-        progresses = cl2 > cl1 if direction == "CALL" else cl2 < cl1
-        if second_direction != direction or not progresses:
-            stats["minute2_reversals"] += 1
+        # Only candles up to C1 plus the developing C2 candle are supplied to
+        # the decision engine. No C3/open/close data leak into setup selection.
+        context = d.iloc[max(0, i-239):i+1].copy().reset_index(drop=True)
+        base = {"signal": "WAIT", "stage": "SETUP DEVELOPING", "candidate_direction": direction,
+                "price": c2_close, "candle_time": pd.Timestamp(c2.datetime),
+                "candle1_time": pd.Timestamp(c1.datetime), "c1_close": c1_close,
+                "c1_high": float(c1.high), "c1_low": float(c1.low),
+                "staircase_reference": c1_close, "entry_point": c1_close,
+                "pattern": pattern, "reason": "Walk-forward C1/C2 confirmation replay."}
+        fused = four_brain_decision(context, base, learned_weights=None,
+                                    structure_candles=aggregate_timeframe(context, 5),
+                                    forming_candle=c2.to_dict())
+        if fused.get("signal") != direction:
+            i += 1
             continue
-        stats["minute2_confirmations"] += 1
-        entry_ref = cl2
-        if direction == "CALL":
-            if float(c3.high) <= entry_ref:
-                stats["no_entry_cross"] += 1
-                continue
-            entry_price = max(float(c3.open), entry_ref)
-        else:
-            if float(c3.low) >= entry_ref:
-                stats["no_entry_cross"] += 1
-                continue
-            entry_price = min(float(c3.open), entry_ref)
-        stats["minute3_price_crosses"] += 1
-        expiry_price = float(c4.close)
+        stats["zone_or_midrange_candidates"] += 1
+        # Match the live historical-memory cutoff to C2's candle start. Only
+        # resolved observations strictly before this setup can be neighbours.
+        fused["candle_time"] = pd.Timestamp(c2.datetime)
+        history_checked = historical_pattern_memory(market, instrument, fused, context, db_path=db_path)
+        if history_checked.get("signal") != direction:
+            stats["historical_vetoes"] += 1
+            i += 1
+            continue
+        entry_time = pd.Timestamp(c3.datetime)
+        day, session, cap = cat_session_info(entry_time)
+        if cap <= 0:
+            i += 1
+            continue
+        count_key = (day, session)
+        used = counts.get(count_key, 0)
+        if used >= cap:
+            stats["session_cap_skips"] += 1
+            i += 1
+            continue
+        entry_price = float(c3.open)
+        expiry_price = float(c3.close)
         outcome = directional_close_outcome(direction, entry_price, expiry_price)
-        directional_move = (expiry_price-entry_price) if direction == "CALL" else (entry_price-expiry_price)
-        trades.append({"Entry CAT": as_cat(t3).strftime("%Y-%m-%d %H:%M:%S"),
-                       "Setup": "HEAD-OF-WAVE", "Direction": direction,
-                       "Entry proxy": entry_price, "Entry reference": entry_ref,
+        move = expiry_price-entry_price
+        directional_move = move if direction == "CALL" else -move
+        trades.append({"Entry CAT": as_cat(entry_time).strftime("%Y-%m-%d %H:%M:%S"),
+                       "Setup": history_checked.get("setup_location", "ZONE"),
+                       "Direction": direction, "Entry proxy": entry_price,
                        "Expiry close": expiry_price, "Directional move": directional_move,
-                       "Outcome": outcome, "Five-minute start": as_cat(t1).strftime("%H:%M:%S")})
+                       "Outcome": outcome, "Historical support": (history_checked.get("historical_memory") or {}).get("directional_support")})
+        counts[count_key] = used + 1
+        # The next setup may begin only after this C3 entry candle has finished.
+        i += 3
 
     wins = sum(t["Outcome"] == "WIN" for t in trades)
     losses = sum(t["Outcome"] == "LOSS" for t in trades)
     draws = sum(t["Outcome"] == "DRAW" for t in trades)
     settled = wins + losses
-    return {"status": "COMPLETED", "bars_tested": len(d),
-            "start": d.datetime.iloc[0].isoformat(), "end": d.datetime.iloc[-1].isoformat(),
-            "trades": trades, "total_signals": len(trades), "wins": wins,
-            "losses": losses, "draws": draws, "zone_signals": 0,
-            "midrange_signals": 0, "win_rate": wins/settled if settled else None,
+    return {"status": "COMPLETED", "bars_tested": len(d), "start": d.datetime.iloc[0].isoformat(),
+            "end": d.datetime.iloc[-1].isoformat(), "trades": trades,
+            "total_signals": len(trades), "wins": wins, "losses": losses, "draws": draws,
+            "zone_signals": sum(t["Setup"] == "ZONE" for t in trades),
+            "midrange_signals": sum(t["Setup"] == "MID-RANGE" for t in trades),
+            "win_rate": wins/settled if settled else None,
             "average_directional_move": float(np.mean([t["Directional move"] for t in trades])) if trades else None,
             "diagnostics": stats,
-            "note": "Three-Stairs historical OHLC proxy: minute 1 identifies direction, minute 2 confirms same-direction close progression, minute 3 must cross the minute-2 close, and minute 4 close approximates the 60-second expiry. OHLC cannot identify the exact intraminute crossing time or payout; validate live/tick data before relying on performance. No four-brain, zone, or historical-veto gate is used."}
-
+            "note": "OHLC walk-forward proxy: C3 open approximates entry and C3 close approximates one-minute expiry. Setup selection uses only completed candles through C2 and prior resolved learning observations; current trained model weights and the live trade-risk journal are intentionally excluded to avoid future-data leakage. This is not a tick-exact or payout-adjusted profitability test. OHLC cannot reproduce the exact 45-second intrabar check; C2 high/low are used conservatively to flag any break of the C1 swing extreme."}
 
 def persist_signal_history(signal, *, status=None, entry_price=None, db_path=None):
     if not signal or not signal.get("signal_id"):
@@ -2810,20 +2410,16 @@ def persist_signal_history(signal, *, status=None, entry_price=None, db_path=Non
             if existing["status"] not in ("WIN", "LOSS", "DRAW", "VOID", "CANCELLED", "MISSED"):
                 if existing["status"] != stage_status or (stage_status == "ENTRY READY" and existing["entry_price"] is None and entry_value is not None):
                     conn.execute("""UPDATE ghost_signal_history SET status=?,
-                        entry_price=CASE WHEN ?='ENTRY READY' THEN COALESCE(entry_price,?) ELSE entry_price END,
-                        entry_time=CASE WHEN ?='ENTRY READY' THEN ? ELSE entry_time END,
-                        expiry_time=CASE WHEN ?='ENTRY READY' THEN ? ELSE expiry_time END
+                        entry_price=CASE WHEN ?='ENTRY READY' THEN COALESCE(entry_price,?) ELSE entry_price END
                         WHERE signal_id=?""",
-                        (stage_status, stage_status, entry_value, stage_status,
-                         str(signal.get("entry_time", created)), stage_status,
-                         str(signal.get("expiry_time", created)), signal_id))
+                        (stage_status, stage_status, entry_value, signal_id))
                     changed = True
         else:
             conn.execute("""INSERT OR IGNORE INTO ghost_signal_history
                 (signal_id,signal_key,session_date,session_name,market,instrument,direction,zone_id,
                  created_at,entry_time,expiry_time,entry_price,status,reason,evidence,features)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                         (signal_id, signal_key, day, session, str(signal.get("market", "DERIV")),
+                (signal_id, signal_key, day, session, str(signal.get("market", "DERIV")),
                  str(signal.get("instrument", "")), direction, str(signal.get("zone_id", "")),
                  created, str(signal.get("entry_time", created)), str(signal.get("expiry_time", created)),
                  entry_value, stage_status, str(signal.get("reason", ""))[:1200],
@@ -3317,8 +2913,6 @@ def build_signal_record(market, instrument, result, expiry=1):
     return {
         "market": market,
         "instrument": instrument,
-        "signal_id": result.get("signal_id"),
-        "signal_key": result.get("signal_key"),
         "direction": result["signal"],
         "reason": result["reason"],
         "stage": result.get("stage", "ENTRY READY"),
@@ -3349,8 +2943,7 @@ def build_preparation_record(market, instrument, result, expiry=1):
     if entry <= created:
         return None
     return {
-        "market": market, "instrument": instrument, "signal_id": result.get("signal_id"),
-        "signal_key": result.get("signal_key"), "direction": "WAIT",
+        "market": market, "instrument": instrument, "direction": "WAIT",
         "reason": result.get("reason", "Candidate is being prepared; no entry yet."),
         "candidate_direction": result.get("candidate_direction", "WAIT"),
         "stage": "PREPARE", "pattern": result.get("pattern", ""),
@@ -3400,7 +2993,7 @@ def show_signal_pad(signal):
     label = "PREPARING RISE / CALL" if prepared and direction == "CALL" else "PREPARING FALL / PUT" if prepared and direction == "PUT" else "RISE / CALL" if direction == "CALL" else "FALL / PUT" if direction == "PUT" else "WAIT"
     entry_label = entry.strftime("%H:%M:%S")
     st.markdown(
-        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.9 · {signal.get('instrument','')}</div>"
+        f"<div class='signal-card {css}'><div class='small-muted'>GHOST 4.8 · {signal.get('instrument','')}</div>"
         f"<h1 style='font-size:30px;margin:2px 0'>{label}</h1><div><b>{status}</b></div>"
         f"<div style='font-size:15px;margin-top:6px'>SCHEDULED ENTRY · <b>{entry_label} CAT</b></div>"
         f"<div class='small-muted'>{signal.get('reason','')}</div></div>",
@@ -3461,16 +3054,14 @@ with st.sidebar:
     market = st.radio(
         "Market engine",
         [
-            "Pocket Option OTC · SHADOW SIGNALS",
             "Pocket Option Forex · ZONE INTELLIGENCE",
             "Deriv Synthetics · GHOST PROTOCOL"
         ],
-        index=2,
+        index=1,
         key="ghost_market_engine"
     )
-    st.markdown("<div class='ghost-zone-status'><b>THREE STAIRS · HEAD-OF-WAVE</b><br>5-minute direction · 1-minute identification, preparation and entry · CAT clock</div>", unsafe_allow_html=True)
-    if market.startswith("Pocket") or "OTC" in market:
-        st.session_state.pop("active_signal", None)
+    st.markdown("<div class='ghost-zone-status'><b>4.8 INTELLIGENCE</b><br>Zone reactions · Predictive entry · CAT clock</div>", unsafe_allow_html=True)
+    if market.startswith("Pocket"):
         old_feed = st.session_state.pop("deriv_live_feed", None)
         st.session_state.pop("deriv_live_symbol", None)
         st.session_state.pop("deriv_historical_candles", None)
@@ -3495,11 +3086,6 @@ with st.sidebar:
         "Refresh dashboard automatically",
         value=True
     )
-    refresh_seconds = st.selectbox(
-        "Refresh cadence (seconds)",
-        options=[1, 2, 5],
-        index=0
-    )
     auto_scan = st.checkbox(
         "Automatically scan",
         value=True
@@ -3518,40 +3104,12 @@ with st.sidebar:
         st.success("Deriv stream stopped and active signal cleared.")
 
     st.caption(
-        "Deriv keeps a persistent live tick subscription; the full dashboard refreshes every second and analysis runs every 5 seconds. "
-        "Forex scans once per minute."
+        "Deriv keeps a persistent live tick subscription; the chart refreshes independently every second, "
+        "while dashboard analysis/status refreshes every 5 seconds. Forex scans once per minute."
     )
     st.divider()
 
-    if "OTC" in market:
-        otc_api_key = st.text_input("OTCharts API key", value=get_otcharts_api_key(), type="password", key="ghost_otc_api_key")
-        if otc_api_key:
-            try:
-                _otc_symbols = fetch_otc_symbols(otc_api_key)
-                st.session_state["ghost_otc_symbols"] = _otc_symbols
-                _otc_names = [x.get("symbol") for x in _otc_symbols if x.get("symbol")]
-                if _otc_names:
-                    otc_symbol = st.selectbox("Pocket Option OTC instrument", _otc_names, index=0, key="ghost_otc_symbol")
-                    _selected_meta = next((x for x in _otc_symbols if x.get("symbol") == otc_symbol), {})
-                    if _selected_meta.get("open") is False:
-                        st.warning("Broker currently marks this instrument CLOSED. Shadow analysis only.")
-                    if _selected_meta.get("payout") is not None:
-                        st.caption(f"Broker payout: {_selected_meta.get('payout')}%")
-                else:
-                    otc_symbol = None
-                    st.warning("No Pocket Option OTC instruments are available on this API key.")
-            except Exception as exc:
-                otc_symbol = None
-                st.error(f"OTCharts catalogue: {exc}")
-        else:
-            otc_symbol = None
-            st.info("Create an OTCharts key and paste it here. The free tier provides limited candle history; live streaming requires a data plan.")
-        pivot_strength = st.slider("OTC swing confirmation", 2, 4, 2, key="otc_pivot_strength")
-        min_steps = st.slider("OTC minimum staircase steps", 3, 5, 3, key="otc_min_steps")
-        pullback_pct = st.slider("OTC maximum pullback (%)", 20, 70, 50, 5, key="otc_pullback_pct")
-        scan = st.button("ANALYZE OTC · SHADOW MODE", type="primary", use_container_width=True)
-        st.caption("Read-only OTCharts feed. GHOST produces CALL / PUT / WAIT observations only; no Pocket Option login or order execution.")
-    elif (market.startswith("Pocket") and "OTC" not in market):
+    if market.startswith("Pocket"):
         api_key = st.text_input(
             "Twelve Data API key",
             value=get_secret_api_key(),
@@ -3595,65 +3153,22 @@ with st.sidebar:
 if st.session_state.pop("stop_stream_requested", False):
     auto_scan = False
 
-# Refresh the whole dashboard every second for countdowns/status; the persistent
-# Deriv stream is analyzed every five seconds to avoid repeated heavy work.
+# Keep the full dashboard rerun aligned with the five-second analysis cadence.
+# The Deriv chart itself is refreshed independently by a Streamlit fragment below.
 if auto_refresh:
-    st_autorefresh(interval=int(refresh_seconds) * 1000, key="desk_clock")
-
-# Start exactly one OTCharts SSE connection for the selected symbol. The reader
-# runs in a daemon thread; Streamlit's normal one-second refresh updates the UI.
-if "OTC" in market and otc_api_key and otc_symbol:
-    current_feed = st.session_state.get("otc_live_feed")
-    if current_feed and (current_feed.symbol != otc_symbol or current_feed.api_key != otc_api_key):
-        current_feed.stop()
-        st.session_state.pop("otc_live_feed", None)
-        st.session_state.pop("otc_live_ticks", None)
-        st.session_state.pop("otc_history_cache", None)
-        st.session_state.pop("otc_output", None)
-        current_feed = None
-    if current_feed is None:
-        try:
-            st.session_state["otc_live_feed"] = OTChartsLiveFeed(otc_api_key, otc_symbol)
-        except Exception as feed_start_error:
-            st.session_state["otc_live_stream_error"] = str(feed_start_error)
-elif "otc_live_feed" in st.session_state:
-    st.session_state["otc_live_feed"].stop()
-    st.session_state.pop("otc_live_feed", None)
-
-_live_feed = st.session_state.get("otc_live_feed") if "OTC" in market else None
-if _live_feed:
-    _new_ticks = []
-    while True:
-        try:
-            _event = _live_feed.events.get_nowait()
-        except queue.Empty:
-            break
-        if _event.get("_event") == "tick" and _event.get("symbol") == otc_symbol:
-            _new_ticks.append(_event)
-        elif _event.get("type") == "error":
-            st.session_state["otc_live_stream_error"] = _event.get("message", "Stream error")
-    if _new_ticks:
-        st.session_state.setdefault("otc_live_ticks", []).extend(_new_ticks)
-        st.session_state["otc_live_ticks"] = st.session_state["otc_live_ticks"][-5000:]
-        _existing_output = st.session_state.get("otc_output")
-        if _existing_output and _existing_output.get("instrument") == otc_symbol:
-            _existing_output["candles"] = merge_otc_ticks(_existing_output.get("candles"), _new_ticks)
-            _existing_output["live_price"] = float(_new_ticks[-1]["price"])
-            _existing_output["live_tick_time"] = float(_new_ticks[-1]["time"])
-            _existing_output["live_status"] = _live_feed.status
-            st.session_state["otc_output"] = _existing_output
+    st_autorefresh(interval=5000, key="desk_clock")
 
 now = now_cat()
 st.caption(
     f"LOCAL TIME · {now.strftime('%A, %d %B %Y · %H:%M:%S CAT')}"
 )
 
-scan_interval = 2 if market.startswith("Deriv") else 5 if "OTC" in market else 60
+scan_interval = 5 if market.startswith("Deriv") else 60
 scan_slot = int(time.time() // scan_interval)
 last_slot = st.session_state.get("last_auto_scan_slot")
 
 auto_scan_due = auto_scan and scan_slot != last_slot
-pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST THREE-STAIRS FOREX|"
+pending_prefix = "GHOST PROTOCOL|" if market.startswith("Deriv") else "GHOST ZONE FOREX|"
 pending_active = any(key.startswith(pending_prefix) for key in st.session_state.get("ghost_pending_candidates", {}))
 # A locked or unsettled prediction must keep the feed/engine alive even if the
 # general auto-scan toggle is off, including after a Streamlit session restart.
@@ -3670,54 +3185,7 @@ if run_scan:
     if auto_scan_due or pending_monitor_due:
         st.session_state["last_auto_scan_slot"] = scan_slot
 
-    if "OTC" in market:
-        try:
-            if not otc_api_key or not otc_symbol:
-                st.warning("Enter a valid OTCharts key and select an OTC instrument.")
-            else:
-                with st.spinner(f"Analyzing {otc_symbol} OTC candles in shadow mode..."):
-                    _cache = st.session_state.get("otc_history_cache")
-                    _cache_valid = (_cache and _cache.get("symbol") == otc_symbol
-                                    and time.time() - _cache.get("fetched_at", 0) < 300)
-                    if _cache_valid:
-                        df, otc_meta = _cache["df"].copy(), _cache["meta"]
-                    else:
-                        df, otc_meta = fetch_otc_candles(otc_symbol, otc_api_key, candles_count, 60)
-                        st.session_state["otc_history_cache"] = {"symbol": otc_symbol, "df": df.copy(),
-                                                                  "meta": otc_meta, "fetched_at": time.time()}
-                    df = merge_otc_ticks(df, st.session_state.get("otc_live_ticks", []))
-                    if len(df) < 40:
-                        raise RuntimeError(f"Only {len(df)} candles returned; at least 40 are needed for analysis.")
-                    profile = learning_profile("POCKET_OTC", otc_symbol)
-                    result = three_stairs_momentum(df, live_price=float(df.iloc[-1]["close"]), instrument=otc_symbol)
-                    result["learning_profile"] = profile
-                    result["shadow_only"] = True
-                    result["feed_gaps"] = otc_meta.get("gaps", {})
-                    result["price"] = float(df.iloc[-1]["close"])
-                    last_time = pd.Timestamp(df.iloc[-1]["datetime"])
-                    age_seconds = max(0, (pd.Timestamp.now(tz="UTC") - last_time.tz_convert("UTC")).total_seconds())
-                    result["feed_age_seconds"] = age_seconds
-                    if age_seconds > 180:
-                        result["signal"] = "WAIT"
-                        result["stage"] = "FEED CHECK"
-                        result["reason"] = f"OTC candle feed is stale ({age_seconds:.0f}s). Signal suppressed."
-                    if otc_meta.get("gaps", {}).get("missingBars", 0):
-                        result["signal"] = "WAIT"
-                        result["stage"] = "FEED CHECK"
-                        result["reason"] = "OTC candle history contains missing bars; signal suppressed pending clean data."
-                    record_learning_observation("POCKET_OTC", otc_symbol, result, candles=df)
-                    resolve_learning_observations("POCKET_OTC", otc_symbol, result.get("price"))
-                    if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
-                        _otc_signal = build_signal_record("POCKET OTC", otc_symbol, result, 1)
-                        persist_signal_history(_otc_signal, status="ENTRY READY", entry_price=result.get("entry_point", result.get("price")))
-                    resolve_signal_history("POCKET OTC", otc_symbol, result.get("price"))
-                    st.session_state["otc_output"] = {"instrument": otc_symbol, "candles": df, "result": result,
-                                                       "last_scan": now_cat().isoformat(), "age_seconds": age_seconds,
-                                                       "open": next((x.get("open") for x in st.session_state.get("ghost_otc_symbols", []) if x.get("symbol") == otc_symbol), None)}
-                    st.session_state["scan_market"] = "otc"
-        except Exception as exc:
-            st.error(f"Pocket Option OTC feed/analysis: {exc}")
-    elif (market.startswith("Pocket") and "OTC" not in market):
+    if market.startswith("Pocket"):
         if not api_key:
             st.error(
                 "Add your Twelve Data key in the sidebar "
@@ -3734,19 +3202,24 @@ if run_scan:
                 note.write(f"Scanning {pair}...")
                 try:
                     df = fetch_forex(pair, api_key, candles_count)
+                    result = three_steps(
+                        df, pivot_strength, min_steps, pullback_pct
+                    )
                     profile = learning_profile("FOREX", pair)
-                    result = three_stairs_momentum(df, live_price=float(df.iloc[-1]["close"]), instrument=pair)
+                    result = four_brain_decision(df, result, pivot_strength, min_steps, pullback_pct,
+                                                 learned_weights=profile["multipliers"], structure_candles=aggregate_timeframe(df, 5))
                     result["learning_profile"] = profile
                     record_learning_observation("FOREX", pair, result, candles=df)
                     resolve_learning_observations("FOREX", pair, result.get("price"))
-                    model_key = f"FOREX|{pair}|GHOST_THREE_STAIRS_MOMENTUM_V1"
+                    model_key = f"FOREX|{pair}|GHOST_4_6_ZONE_V1"
                     model_cache = st.session_state.setdefault("ghost_experience_models", {})
                     if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
                         trained = train_experience_model("FOREX", pair)
                         model_cache[model_key] = {**trained, "cached_at": int(time.time())}
-                    result["experience_ai"] = {k:v for k,v in model_cache[model_key].items() if k not in ("weights", "mean", "scale")}
-                    result["experience_ai"]["role"] = "LEARNING ONLY · does not veto Three-Stairs entries"
-                    resolve_signal_history("GHOST THREE-STAIRS FOREX", pair, result.get("price"))
+                    result = apply_experience_gate(result, model_cache[model_key], df)
+                    result = historical_pattern_memory("FOREX", pair, result, df)
+                    result = apply_preparation_gate(result, "GHOST ZONE FOREX", pair, expiry, candles=chosen.get("df"))
+                    resolve_signal_history("GHOST ZONE FOREX", pair, result.get("price"))
                     if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                         st.session_state["ghost_last_candidate"] = {"market": "FOREX", "instrument": pair, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
                     output.append({
@@ -3779,13 +3252,13 @@ if run_scan:
             if candidates:
                 chosen = max(candidates, key=lambda item: item["result"].get("candle_time", ""))
                 existing = st.session_state.get("active_signal")
-                same_active = (existing and existing.get("market") == "GHOST THREE-STAIRS FOREX"
+                same_active = (existing and existing.get("market") == "GHOST ZONE FOREX"
                                and existing.get("instrument") == chosen["instrument"]
                                and existing.get("direction") == chosen["result"].get("signal")
                                and str(existing.get("candle_time", "")) == str(chosen["result"].get("candle_time", "")))
                 if not same_active:
                     st.session_state["active_signal"] = build_signal_record(
-                        "GHOST THREE-STAIRS FOREX", chosen["instrument"], chosen["result"], expiry)
+                        "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
                 _active_fx = st.session_state.get("active_signal") or {}
                 _fx_result = chosen["result"]
                 _active_fx.update({"signal_id": _fx_result.get("signal_id") or _active_fx.get("signal_id"),
@@ -3797,7 +3270,7 @@ if run_scan:
             elif preparing:
                 chosen = max(preparing, key=lambda item: item["result"].get("candle_time", ""))
                 prep = build_preparation_record(
-                    "GHOST THREE-STAIRS FOREX", chosen["instrument"], chosen["result"], expiry)
+                    "GHOST ZONE FOREX", chosen["instrument"], chosen["result"], expiry)
                 if prep is not None:
                     _fx_result = chosen["result"]
                     prep["signal_id"] = _fx_result.get("signal_id")
@@ -3810,15 +3283,8 @@ if run_scan:
                     persist_signal_history(prep, status="PREPARED")
             else:
                 active = st.session_state.get("active_signal")
-                if active and active.get("market") == "GHOST THREE-STAIRS FOREX":
-                    try:
-                        _expiry = datetime.fromisoformat(active.get("expiry_time", ""))
-                        if _expiry.tzinfo is None:
-                            _expiry = _expiry.replace(tzinfo=TZ)
-                        if now_cat() >= _expiry:
-                            st.session_state.pop("active_signal", None)
-                    except Exception:
-                        st.session_state.pop("active_signal", None)
+                if active and active.get("market") == "GHOST ZONE FOREX":
+                    st.session_state.pop("active_signal", None)
 
     else:
         try:
@@ -3848,7 +3314,7 @@ if run_scan:
                 feed_status = feed.status()
                 if ticks.empty or len(ticks) < 120:
                     raise RuntimeError("Deriv stream is starting; waiting for sufficient initial tick history.")
-                feed_check = ghost_protocol(ticks)
+                result = ghost_protocol(ticks)
                 candles = merge_candle_history(ticks_to_candles(ticks), st.session_state.get("deriv_historical_candles"))
                 closed_brain_candles = candles.copy()
                 closed_brain_candles["datetime"] = pd.to_datetime(closed_brain_candles["datetime"], utc=True)
@@ -3860,22 +3326,22 @@ if run_scan:
                     _last_bar_time = pd.Timestamp(_last_bar.datetime)
                     if _last_bar_time.floor("min") == pd.Timestamp.now(tz="UTC").floor("min"):
                         _forming_bar = _last_bar
-                if feed_check.get("stage") == "FEED CHECK":
-                    result = feed_check
-                else:
-                    result = three_stairs_momentum(closed_brain_candles, live_price=float(ticks.close.iloc[-1]),
-                                                   forming_candle=_forming_bar, instrument=GHOST_NAME)
+                result = four_brain_decision(closed_brain_candles, result,
+                                             learned_weights=profile["multipliers"],
+                                             structure_candles=aggregate_timeframe(closed_brain_candles, 5),
+                                             forming_candle=_forming_bar)
                 result = apply_trade_safety(result, "DERIV", GHOST_NAME, closed_brain_candles)
                 result["learning_profile"] = profile
                 record_learning_observation("DERIV", GHOST_NAME, result, candles=closed_brain_candles)
                 resolve_learning_observations("DERIV", GHOST_NAME, result.get("price"))
-                model_key = f"DERIV|{GHOST_NAME}|GHOST_THREE_STAIRS_MOMENTUM_V1"
+                model_key = f"DERIV|{GHOST_NAME}|GHOST_4_6_ZONE_V1"
                 model_cache = st.session_state.setdefault("ghost_experience_models", {})
                 if model_key not in model_cache or int(time.time()) - model_cache[model_key].get("cached_at", 0) >= 60:
                     trained = train_experience_model("DERIV", GHOST_NAME)
                     model_cache[model_key] = {**trained, "cached_at": int(time.time())}
-                result["experience_ai"] = {k:v for k,v in model_cache[model_key].items() if k not in ("weights", "mean", "scale")}
-                result["experience_ai"]["role"] = "LEARNING ONLY · does not veto Three-Stairs entries"
+                result = apply_experience_gate(result, model_cache[model_key], closed_brain_candles)
+                result = historical_pattern_memory("DERIV", GHOST_NAME, result, closed_brain_candles)
+                result = apply_preparation_gate(result, "GHOST PROTOCOL", GHOST_NAME, 1, candles=closed_brain_candles, forming_candle=_forming_bar)
                 resolve_signal_history("GHOST PROTOCOL", GHOST_NAME, result.get("price"), price_history=ticks)
                 if result.get("stage") == "ENTRY READY" and result.get("signal") in ("CALL", "PUT"):
                     st.session_state["ghost_last_candidate"] = {"market": "DERIV", "instrument": GHOST_NAME, "result": result, "regime": (result.get("market_regime") or {}).get("tag", "UNKNOWN")}
@@ -3924,35 +3390,50 @@ if run_scan:
             else:
                 active = st.session_state.get("active_signal")
                 if active and active.get("instrument") == GHOST_NAME:
-                    try:
-                        _expiry = datetime.fromisoformat(active.get("expiry_time", ""))
-                        if _expiry.tzinfo is None:
-                            _expiry = _expiry.replace(tzinfo=TZ)
-                        if now_cat() >= _expiry:
-                            st.session_state.pop("active_signal", None)
-                    except Exception:
-                        st.session_state.pop("active_signal", None)
+                    st.session_state.pop("active_signal", None)
             st.session_state.pop("deriv_scan_error", None)
         except Exception as exc:
             st.session_state["deriv_scan_error"] = str(exc)
             st.error(f"GHOST feed/scan issue: {exc}")
 
 
+@st.fragment(run_every="1s")
+def render_deriv_live_chart():
+    """Refresh only the Deriv chart from the persistent tick buffer."""
+    output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
+    feed = st.session_state.get("deriv_live_feed")
+    candles = None
+
+    # Build the latest candle view directly from the feed snapshot. This does
+    # not rerun the signal engine or redraw the rest of the dashboard.
+    if feed is not None:
+        try:
+            live_ticks = feed.snapshot()
+            if live_ticks is not None and not live_ticks.empty:
+                live_candles = ticks_to_candles(live_ticks)
+                candles = merge_candle_history(
+                    live_candles, st.session_state.get("deriv_historical_candles")
+                )
+        except Exception:
+            candles = None
+
+    if candles is None or candles.empty:
+        candles = output.get("candles") if output else None
+
+    if candles is not None and not candles.empty:
+        levels = (output or {}).get("result", {}).get("support_resistance")
+        st.plotly_chart(
+            chart(candles, GHOST_NAME + " · LIVE 1M", levels),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key="ghost_deriv_live_chart",
+        )
+    else:
+        st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
+
+
 def render_chart_area():
-    if "OTC" in market:
-        output = st.session_state.get("otc_output") if st.session_state.get("scan_market") == "otc" else None
-        if output and output.get("candles") is not None and not output["candles"].empty:
-            st.plotly_chart(chart(output["candles"], output["instrument"] + " · POCKET OTC 1M", output["result"].get("support_resistance")), use_container_width=True, config={"displayModeBar": False})
-            _feed = st.session_state.get("otc_live_feed")
-            _feed_status = _feed.status if _feed else "Stream not started"
-            _live_price = output.get("live_price", output["candles"].iloc[-1]["close"])
-            st.caption(f"OTCharts live stream: {_feed_status} · Price: {_live_price} · Candle history age: {output.get('age_seconds', 0):.0f}s · shadow mode")
-        else:
-            _feed = st.session_state.get("otc_live_feed")
-            if _feed:
-                st.info(f"OTCharts stream: {_feed.status}. Waiting for candle analysis or first live tick.")
-            st.markdown("<div class='signal-card signal-wait'><h3>OTC CHART STANDBY</h3></div>", unsafe_allow_html=True)
-    elif (market.startswith("Pocket") and "OTC" not in market):
+    if market.startswith("Pocket"):
         results = st.session_state.get("scan_output", []) if st.session_state.get("scan_market") == "forex" else []
         valid = [x for x in results if "error" not in x and x.get("df") is not None and not x["df"].empty]
         if valid:
@@ -3965,18 +3446,11 @@ def render_chart_area():
         else:
             st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
     else:
-        output = st.session_state.get("deriv_output") if st.session_state.get("scan_market") == "deriv" else None
-        if output and output.get("candles") is not None and not output["candles"].empty:
-            st.plotly_chart(chart(output["candles"], GHOST_NAME + " · LIVE 1M", output["result"].get("support_resistance")), use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.markdown("<div class='signal-card signal-wait'><h3>CHART STANDBY</h3></div>", unsafe_allow_html=True)
+        render_deriv_live_chart()
 
 
 def selected_result():
-    if "OTC" in market:
-        output = st.session_state.get("otc_output") if st.session_state.get("scan_market") == "otc" else None
-        return (output["result"], output["instrument"]) if output else (None, None)
-    if (market.startswith("Pocket") and "OTC" not in market):
+    if market.startswith("Pocket"):
         results = st.session_state.get("scan_output", []) if st.session_state.get("scan_market") == "forex" else []
         valid = [x for x in results if "error" not in x]
         if not valid:
@@ -4013,7 +3487,7 @@ if active_signal:
 
 result, instrument_name = selected_result()
 
-st.markdown("<div class='ghost-kicker'>SHADOW SIGNAL PAD · READ ONLY</div>" if "OTC" in market else "<div class='ghost-kicker'>LIVE SIGNAL PAD</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>LIVE SIGNAL PAD</div>", unsafe_allow_html=True)
 if market.startswith("Deriv"):
     _feed = st.session_state.get("deriv_live_feed")
     _feed_state = _feed.status() if _feed is not None else None
@@ -4038,7 +3512,7 @@ if result:
         else:
             st.write("Collecting enough completed candles to evaluate the current support/resistance zones.")
         _lp = result.get("learning_profile", {})
-        _inv_market = "DERIV" if market.startswith("Deriv") else ("POCKET_OTC" if "OTC" in market else "FOREX")
+        _inv_market = "DERIV" if market.startswith("Deriv") else "FOREX"
         _inv_instrument = GHOST_NAME if _inv_market == "DERIV" else (instrument_name or "")
         _inventory = learning_data_inventory(_inv_market, _inv_instrument) if _inv_instrument else {"total": 0, "labelled": 0, "model_ready": 0}
         st.write(f"Historical memory loaded for this instrument: {_inventory['total']} records · {_inventory['labelled']} direction-labelled · {_inventory['model_ready']} model-ready")
@@ -4068,7 +3542,7 @@ if result:
             st.write(f"ATR defence: {_vol.get('state', 'UNKNOWN')} · size tier cap {float(_vol.get('multiplier', 1.0)):.0%} · {_ratio_label}")
 
 if result and result.get("stage") == "PREPARE" and not active_signal:
-    st.markdown("<div class='signal-card signal-prepared'><h3>ENTRY PREPARED</h3><div class='small-muted'>GHOST has identified directional momentum and is preparing the minute-three entry.</div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='signal-card signal-prepared'><h3>ENTRY PREPARED</h3><div class='small-muted'>GHOST has selected a future entry time and is rechecking the zone reaction.</div></div>", unsafe_allow_html=True)
 
 st.markdown("<div class='ghost-kicker'>LIVE CANDLE CHART</div>", unsafe_allow_html=True)
 render_chart_area()
@@ -4121,7 +3595,7 @@ if market.startswith("Deriv"):
             _b2.metric("WINS", _bt.get("wins", 0))
             _b3.metric("LOSSES", _bt.get("losses", 0))
             _b4.metric("WIN RATE", f"{_bt['win_rate']:.1%}" if _bt.get("win_rate") is not None else "NOT ESTABLISHED")
-            st.caption(f"First-three-minute momentum setups: {_bt.get('total_signals', 0)} · Draws: {_bt.get('draws', 0)}")
+            st.caption(f"Zone setups: {_bt.get('zone_signals', 0)} · Evidence-qualified mid-range setups: {_bt.get('midrange_signals', 0)} · Draws: {_bt.get('draws', 0)}")
             if _bt.get("trades"):
                 st.dataframe(pd.DataFrame(_bt["trades"]), use_container_width=True, hide_index=True)
             st.caption(_bt.get("note", ""))
@@ -4141,7 +3615,7 @@ else:
 backup_col, restore_col = st.columns(2)
 with backup_col:
     st.download_button(
-              "DOWNLOAD LEARNING BACKUP",
+        "DOWNLOAD LEARNING BACKUP",
         data=learning_export_bytes(),
         file_name="ghost_learning_history.csv",
         mime="text/csv",
@@ -4167,7 +3641,7 @@ with restore_col:
 # GHOST 4.8 — MANUAL TRADE OUTCOME FEEDBACK
 # ============================================================
 st.divider()
-st.markdown("<div class='ghost-kicker'>GHOST 4.9 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
+st.markdown("<div class='ghost-kicker'>GHOST 4.8 · TRADE OUTCOME JOURNAL</div>", unsafe_allow_html=True)
 st.caption("After a demo trade expires, record its actual WIN / LOSS / VOID result. Only these manually confirmed outcomes train setup-specific risk memory.")
 _saved_candidate = st.session_state.get("ghost_last_candidate") or {}
 active_result = _saved_candidate.get("result")
@@ -4198,4 +3672,4 @@ try:
 except Exception as _journal_exc:
     st.caption(f"Trade journal is unavailable: {_journal_exc}")
 
-st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.9 · SIGNAL INTEGRITY · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
+st.markdown("<div class='small-muted' style='text-align:center;font-size:10px'>GHOST 4.8 · SIGNAL INTEGRITY · MANUAL ALERTS ONLY</div>", unsafe_allow_html=True)
